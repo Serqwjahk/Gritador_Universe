@@ -1,0 +1,200 @@
+Hello and welcome to another exciting Blender tutorial. Today we're going to be making
+solar flares. Let's get started. Okay, so the plan today is to try and make some solar flares. So
+we're going to try and create the surface of a sun and then get some kind of fiery
+solar flare thing. And the idea is to actually have this animated because, you know, it'd be
+really cool to have a really easy and efficient way to make animated solar flares that are kind
+of like, you know, firing off of a planet. Anyways, the goal is not to come up with like
+a really heavy, complex way of doing it. I'm trying to come up with a simple way
+because sometimes that can give you even the best, really give you the best result,
+the simpler it is. Shift A, mesh, UBC, scale it up, grab a subdivision surface modifier. Where are
+you? There you are. Right click, shade smooth. Okay, now let's get started. So first thing,
+first thing we need is a sun. So we need a kind of a sun surface. All right, let's drag this out,
+create our shader editor. Let's go to the shader editor.
+And I'm going to click new to create a new material. And just come right up here. I'm going
+to get rid of my view, turn all these off, and I'm gonna switch to rendered view. I'm gonna go
+and make my world black. And let's put some space. So noise, color ramp, factor into the factor,
+we're going to take the color into the color there. I'll turn the scale up to 600.
+And I'll crunch it down. We go. Space, turn the strength up a little bit. All right, let's go back
+to our object shader, click on the thing. All right, now, first up, we're going to grab some
+noise. Noise, I think it's pretty much all we're going to need, to be honest, to make a sun. I'm
+going to grab a color ramp. Let's see, we're going to take this, and I'm going to plug it into the
+emission, because it's a sun. So the whole thing is just going to emit light. And I'll make it
+very much like orange and red.
+And I think I'll keep black, because black's a pretty key color as well. And a sun. I might add
+one extra little pip here at the very end. All right, let's flip this around. Like, so take this
+one, and I'm going to make this one bright and give it more of a red tone. All right, now, what
+we'll do is take the scale way up, like that. Distortion, maybe? So let's go ahead and make this
+a little bit darker. And then we're going to go into our reader settings. We're going to turn on
+Bloom. And we don't really need screen space reflections, but let's turn them on anyways. And
+I will turn up my emission strength. Now, let's take, I also want to go to my color management. I
+forget to do this a lot, but I want to take it off Filmic and switch it to standard. Filmic adds a
+bit of a flat contrast curve, just doesn't always give you what you want. Now, let's play with these
+colors. Now that we've got the emission turned up, it's doing some, you know, it'll do some interesting
+stuff with the colors.
+So we can actually play around here. I can bring this up a bit more. So if I use a Fresnel texture,
+and I grab a color ramp, a LaCasso, plug the factor into the factor, and we'll just, we'll
+ignore everything else for the time being. And we'll jump back into just emission and see how
+it gives me the brighter edges as we face further away from the camera. Switch to B-Spline, that
+gives me an even smoother fall off. We could create a, let's create a vector
+math node. And the reason why I'm using vector math and not just a straight math node is because
+I want to create, I want to preserve the color. And remember, color has three values, red, green,
+and blue. So it's a vector of three numbers. So if I do math with a vector of three numbers, then
+it will preserve that vector. Now, I don't want to do multiply. So I don't want to multiply by
+black. Maybe we could just add. Anyway, so what this is doing now is it's
+adding in even more emission along the edges as we get close to the edge, right? By using a vector
+math node, we're able to preserve color. And so we're adding this vector of three numbers, this
+R, G, and B value. And I've set this top part of the ramp, color ramp, to have a vibrancy that's
+over one. So it's right now it's 3.487. So it's like a super bright value. So that super bright
+value is being added to these values. And so it's pushing it up.
+So high now that we're getting a lot of bloom, but just on this outer bit, not as much in the
+center, right? Now, the other thing we do is to try and create that effect where we've got the
+corona effect would be to break this up somehow. Go for noise texture. And I'll create another
+color ramp. And I'll take the factor into the factor here. And what I'll do is I'll bring this
+up, increase the scale, and I'm going to create a mix. Oh, no, sorry. I'll create a vector
+math node again. I guess we should mix RGB. We could be doing that.
+I'm going to take this in here. And I'll set this to multiply. Turn it up. And I'll mess up the
+scale. I don't know if you can see this. Like I'm seeing it, but there's like little bright spots.
+You kind of see it moving. If we move this down, you can really see it. We got like this bit's
+brighter and this bit's darker. Can you see that with the YouTube compression? One thing we can do
+is with our noise texture, we can set this to 4D. And now we can take the W value and put some
+animation into that. So the quickest way to do that is use the pound symbol and type the word
+frame. This will automatically set up a driver. That's what the pound symbol does. It's like a
+short key for setting up drivers. So it's going to set up a driver that links this value with
+the frame number. But that's going to be a bit too fast. So if I hit it, hit enter, it's going
+to be purple now. And now if I hit play, you see this is animating with that. But you can see it's
+like way too fast. So we can add some math into this. So we can multiply by 001. And that's going
+to slow it down. We're going to go a bit further than that.
+So I'll try another zero. There we go. And I can come over to here and switch this to 40 as well.
+Frame times 0.001. Let's try that. Yeah, now we're actually going to see... Can you see that
+along the edges? So I'm going to go ahead and render view. Turn everything back on. I'm going
+to actually make a curve, create a path. Bring it over here so I can see it. Rotate on the Y 90
+degrees. Full stop.
+Hold my keyboard to focus on it. I'll come to my curve controls here and open up geometry. And I'm
+going to extrude it. Maybe like 0.5. And I'll rotate Z 90 so that it's facing me. Now I'm
+thinking... See how we can curve this thing. And let's create a new material. Call this flare.
+All right. We need to make some fire. Let's figure that out. I'll create... I'll put a noise texture
+down. I'll put a veroni down.
+And I'll put a musgrave down. I'm putting all three of these because I'm not really sure which
+one's going to give us the right result. I'll grab a color ramp. Might start with the musgrave.
+Put that into the factor. And I'll put this into the emission. Let's see. If I take my dimension
+down and my detail up. Let's start with this. I'm going to take the noise. And I'm going to plug my
+noise. Take the factor and I'll put it in the scale. Let me try... Let's grab a texture coordinate
+node just in case.
+I'll plug UV into it. I'm just experimenting at this point. Thinking about the approach.
+FBM looks pretty good. Let's go ahead and get the right colors so that we can actually think
+about this in context. My vibrancy up. Go for a bit of red. And now what we're going to do is
+turn up the emission strength. All right. Next thing we can do is we can... Let's create another
+color ramp. I'm going to plug this into the alpha channel. And I'll go ahead and set up transparency.
+So I'll go to tools, now options. I'm going to turn on blend mode. We're going to go alpha. I'll stick
+with alpha hash. Shadow mode, I'm going to go none. We don't want the shadows from this. And actually,
+I might just do alpha blend. I think it'll work fine in this case. Turn off show back face. I'm
+going to go to a roughness of like 0.5. First idea would be to go into edit mode. Grab the bottom
+points and the top point and the bottom point. Grab them on the Y.
+Pull them in there.
+Like this. Shrink it down. Scale on the Y. You can see what I mean, as opposed to like working
+with a particle system, right? So I've got exact control now over the shape of this. It's not there
+yet. It's not working fully yet. But I can really sculpt how this thing's looking. Now, I might try
+playing with taper a little bit. Let's see. Where is our... If I grab... I'm trying to remember
+how taper works. Let me create another curve. I'll just create an ordinary path. I'm going to stick
+it right there at my zero, zero point. And I'm going to select it as my taper object. Basically,
+the way the taper object works is you create a curve and you move its points around in edit mode.
+And it changes... It basically helps Blender figure out how to taper this object. You're
+creating a curve that creates the profile of how the taper should flow. I'm going to come over here.
+I'm going to create a mapping node. And I'm going to drop it in right here in between the V and the
+vector. And I'm going to have a look at my scale. So I'm going to bring this down. So scale Y,
+I'm bringing it down just a little bit because I like some of the stretch that's going on,
+you know, because it looks like it's got some directional flow to it.
+Okay. Let's get rid of these hard edges. So what we need to do is,
+I'm going to grab a gradient texture and a color ramp. I'll just duplicate this one.
+I'll plug the color into the factor. And then I'm just going to plug this into the emission
+just so we can see it. And I'll unplug the alpha as well. And I'll drag this around.
+I'll grab a texture coordinate node. And I'll use the UV. And I'll grab a mapping node.
+And we're just going to rotate this.
+UV. Possibly on the Y, 90 degrees. Let me just take this back out.
+Okay. So not the Y. Maybe the X. Nope. Maybe the Z. 90 degrees. Flip this around.
+Just looking for it. There we go. I'm all done. Shift and drag. So what I'm doing here is I'm
+just kind of isolating because I'm using the UV. Remember this object was straight up and down,
+right?
+We twisted it. We've morphed it. So the UV was kind of the straight up and down thing. And it's
+just the UV has been bent along with the geometry of this object. So when I use a gradient texture
+using the UV coordinate, and I rotate it 90 degrees, and then just shift it a little bit,
+I'm able to get this highlight just along the edge. So now what I can do is I can do this again.
+So I can duplicate this and this. Plug the UV into here.
+Vector into here. And then instead of 90, I could go negative 90. And let's plug this one in and just
+find it. So put this back to zero. And I'm just going to position this. So it's kind of along the
+edge there. Let's just use two of these. So color. Color. And we're going to go mix RGB. So shift A,
+search mix RGB. Drop this down.
+Put this one into here. This one into here. I'll switch this to add. Turn my factor all the way up.
+And I'll pipe this into the emission. So now we've got this nice matte that sort of gives us the
+edges of this thing. If we set this to ease, it'll be even more of a gradual fall off.
+And it should look pretty good. Okay. So now what we can use is we can use this to mask out
+the alpha channel. So this is our alpha channel. And we're going to put this in here. And we're
+going to use our alpha channel. So what I want to do is I want to subtract this image from this
+image, the one that we're using to drive our alpha. So I'll grab a mix RGB. And I'll stick this one in
+here. This one into here. Where is it? There it is. And I'm going to go subtract. Turn my factor all
+the way up. And then I'll take the color. Oh, sorry. That wasn't supposed to go into the emission.
+It was supposed to go into the alpha.
+I'm going to turn the vibrancy up on these to two. And then you can see as I play with this,
+it's going to work. But we are getting some weird stuff. And it's because our emission
+is still happening. Let's use it over here. So unplug this. I'll grab this, bring it right over
+here, and just drop it here. And I'll feed this into the top. And I'll pipe this in here. So now
+we're going to subtract out the edge first before we send it through.
+And this allows it to be removed from the emission as well. So we don't get those weird artifacts.
+Now let's pull these in a bit. So now you can see it's getting rid of that part edge for us.
+All right. So now what you can see what we can do is we come over here to the mapping node.
+And we can move it along the X. See how that creates a flow? It looks like the solar flare is
+actually moving.
+But we need to move this noise, the Musgrave as well. So what we need to do is have another
+mapping that's kind of driving both of these. I'm going to make, let's see, what happens when we
+change the dimension? Let's plug this vector into the Musgrave as well. I just want to see what it
+looks like. Oh, that's pretty cool. I'm going to take, let's see, we'll take this location,
+this X location. And we're going to do the pound symbol. We'll type in frame again and multiply it
+by 0.0001.
+And that will allow it to be driven by the frame number. I'll take the value down. Let's just try
+0.01. Try 2. That feels a bit better. All right. Now what we can do is we can grab the, I'll take
+this noise texture and I'll make it 40. And then I want to drive this W value in both the Musgrave
+and the noise. So I can create a value node and I can plug it into the W of both of these. Now if I
+move it, it's going to allow the flame to kind of evolve. So we can put another driver on this one.
+So pound sign frame, and let's go 0.001. And that's going to cause it to evolve.
+Now, what we need to do next is we need to figure out how to get this flare texture to change based
+on where it's positioned. That way we can just take it and duplicate it, shift D, move it around
+and have the texture change based on its position. So we don't end up with the same pattern on every
+flare. And we also don't end up having to make a new material for each flare that we're going to
+use. We want an easy system that we can reuse. So what I'm going to do is I need to add in some
+values into the mapping node here. So I'm going to take my material and first thing I'll do is
+I'll create another texture coordinate node. Get that out of there. Get that out of there.
+Cause we don't have that in the scene anymore. All right. First thing I'm going to do is I'm
+going to create another texture coordinate node. So I'll shift
+D, duplicate that, bring it down. And next I'm going to create a new object
+that I can use to drive this system. I'm just going to an empty and I'll put it in my scene.
+I'll just stick it off to the side somewhere. And I'll go back to my material here and I'll
+select that empty as this object here in the texture coordinate. Now what we're going to do
+is take the location of this empty and we're going to use it to slightly change the texture of this.
+So it's sort of like the position of this object in relation to this empty is how it's going to
+change the texture. That's kind of how it works. So I'm going to grab a mix RGB node and I'm going
+to take the vector of my mapping node and pipe it into the top socket. And I'll take the object
+coordinate of my texture coordinate, which means it's going to take the location of this object
+and I'll pipe it in here. I'm going to turn this off for now to set to zero and I'll take
+the color into the vector and I'll take this into the vector as well. All right. Now what we're
+going to do is we're going to take the factor system and I'm going to hold down shift and drag
+it down a little bit. You can see they're changing and they're changing differently.
+Like look how both these patterns are breaking up. I can go really far with it, but it's going
+to change the overall look and design that we've got. So I just want to bring it in a little bit.
+So we keep the design. But now if I move this around, you can see the texture is evolving.
+This will give me that freedom to now place multiple layers and things won't look exactly
+the same. Well, we finally landed it. We've got a sun that works. We've got animated,
+sun flares and hotspots and everything. And I think the shader looks really, really cool.
+So if you want to get a hold of this, this shader will be up on the Patreon, this whole project
+file. So I put this up for our $10 patrons over there as long as well as this, the live stream
+version of this tutorial, I'm going to put up there for everybody on the $4 level. If you wanted
+to watch the entire live stream, it's quite a long one today, actually about two hours.
+And yeah, also if you don't like Patreon,
+just hold tight because eventually this will end up in one of my space packs, which I'll put on the
+market store as well. So keep an eye out for that. Anyways, thanks for watching today. I hope
+you really enjoyed this tutorial. Hope you learned some cool things. Please remember to hit that like
+button and subscribe to the channel if you want to see more videos like this. And leave me a comment
+that really helps a lot of people discover the videos if you leave comments. And yeah, check out
+all the the extra sites like Patreon and stuff. Really appreciate the support. Consider hitting
+that subscription button on YouTube and bring the little bell to get notifications and maybe
+even join. Who knows? Lots of options for you. Thanks for watching. I will
+catch you in the next tutorial. I'll see you later. Bye.

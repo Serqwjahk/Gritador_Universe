@@ -1,0 +1,15 @@
+/build/
+/out/
+/bin/
+/.vscode/
+*.exe
+*.obj
+*.o
+*.pdb
+*.ilk
+*.log
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+.claude

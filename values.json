@@ -1,0 +1,270 @@
+{
+  "system_scale_references": {
+    "1_Astronomical_Unit_km": 149597870.7,
+    "1_Light_Year_km": 9460730472580.8,
+    "Earth_Mass_kg": 5.9724e24,
+    "Earth_Radius_km": 6371.0,
+    "Jupiter_Mass_kg": 1.89819e27,
+    "Jupiter_Radius_km": 69911.0,
+    "Solar_Mass_kg": 1.9885e30,
+    "Solar_Radius_km": 696340.0
+  },
+  "celestial_bodies": {
+    "Sun": {
+      "mass_kg": 1.9885e30,
+      "radius_km": 696340.0,
+      "gravity_m_s2": 274.0,
+      "density_g_cm3": 1.408,
+      "axial_tilt_deg": 7.25,
+      "surface_temp_K": 5778.0,
+      "atmospheric_pressure_bar": 0.0,
+      "is_gas_giant": true,
+      "solid_composition_fraction": {},
+      "atmospheric_composition_fraction": {
+        "Hidrogeno": 0.7346,
+        "Helio": 0.2485,
+        "Oxigeno": 0.0077,
+        "Carbono": 0.0029,
+        "Hierro": 0.0016,
+        "Neon": 0.0012,
+        "Nitrogeno": 0.0009
+      }
+    },
+    "Mercury": {
+      "mass_kg": 3.3011e23,
+      "radius_km": 2439.7,
+      "gravity_m_s2": 3.7,
+      "density_g_cm3": 5.427,
+      "axial_tilt_deg": 0.034,
+      "surface_temp_K": 440.0,
+      "atmospheric_pressure_bar": 0.0,
+      "is_gas_giant": false,
+      "solid_composition_fraction": {
+        "Hierro": 0.700,
+        "Oxigeno": 0.150,
+        "Silicio": 0.070,
+        "Magnesio": 0.060,
+        "Aluminio": 0.010,
+        "Calcio": 0.010
+      },
+      "atmospheric_composition_fraction": {}
+    },
+    "Venus": {
+      "mass_kg": 4.8675e24,
+      "radius_km": 6051.8,
+      "gravity_m_s2": 8.87,
+      "density_g_cm3": 5.243,
+      "axial_tilt_deg": 177.36,
+      "surface_temp_K": 737.0,
+      "atmospheric_pressure_bar": 92.0,
+      "is_gas_giant": false,
+      "solid_composition_fraction": {
+        "Hierro": 0.315,
+        "Oxigeno": 0.300,
+        "Silicio": 0.150,
+        "Magnesio": 0.140,
+        "Azufre": 0.025,
+        "Niquel": 0.018,
+        "Calcio": 0.015,
+        "Aluminio": 0.014
+      },
+      "atmospheric_composition_fraction": {
+        "Dioxido_de_Carbono": 0.965,
+        "Nitrogeno": 0.035,
+        "Dioxido_de_Azufre": 0.00015,
+        "Argon": 0.00007,
+        "Vapor_de_Agua": 0.00002
+      }
+    },
+    "Earth": {
+      "mass_kg": 5.9724e24,
+      "radius_km": 6371.0,
+      "gravity_m_s2": 9.8,
+      "density_g_cm3": 5.514,
+      "axial_tilt_deg": 23.44,
+      "surface_temp_K": 288.0,
+      "atmospheric_pressure_bar": 1.013,
+      "is_gas_giant": false,
+      "solid_composition_fraction": {
+        "Hierro": 0.321,
+        "Oxigeno": 0.301,
+        "Silicio": 0.151,
+        "Magnesio": 0.139,
+        "Azufre": 0.029,
+        "Niquel": 0.018,
+        "Calcio": 0.015,
+        "Aluminio": 0.014,
+        "Agua_Liquida": 0.0002
+      },
+      "atmospheric_composition_fraction": {
+        "Nitrogeno": 0.7808,
+        "Oxigeno": 0.2095,
+        "Argon": 0.0093,
+        "Dioxido_de_Carbono": 0.0004
+      }
+    },
+    "Moon": {
+      "mass_kg": 7.346e22,
+      "radius_km": 1737.4,
+      "gravity_m_s2": 1.62,
+      "density_g_cm3": 3.344,
+      "axial_tilt_deg": 1.542,
+      "surface_temp_K": 250.0,
+      "atmospheric_pressure_bar": 0.0,
+      "is_gas_giant": false,
+      "solid_composition_fraction": {
+        "Oxigeno": 0.430,
+        "Silicio": 0.200,
+        "Magnesio": 0.190,
+        "Hierro": 0.100,
+        "Calcio": 0.030,
+        "Aluminio": 0.030,
+        "Titanio": 0.018,
+        "Cromo": 0.002
+      },
+      "atmospheric_composition_fraction": {}
+    },
+    "Mars": {
+      "mass_kg": 6.4171e23,
+      "radius_km": 3389.5,
+      "gravity_m_s2": 3.71,
+      "density_g_cm3": 3.933,
+      "axial_tilt_deg": 25.19,
+      "surface_temp_K": 210.0,
+      "atmospheric_pressure_bar": 0.006,
+      "is_gas_giant": false,
+      "solid_composition_fraction": {
+        "Oxigeno": 0.420,
+        "Hierro": 0.210,
+        "Silicio": 0.160,
+        "Magnesio": 0.110,
+        "Azufre": 0.040,
+        "Calcio": 0.030,
+        "Aluminio": 0.020,
+        "Niquel": 0.010
+      },
+      "atmospheric_composition_fraction": {
+        "Dioxido_de_Carbono": 0.953,
+        "Nitrogeno": 0.027,
+        "Argon": 0.016,
+        "Oxigeno": 0.0013,
+        "Monoxido_de_Carbono": 0.0008
+      }
+    },
+    "Jupiter": {
+      "mass_kg": 1.89819e27,
+      "radius_km": 69911.0,
+      "gravity_m_s2": 24.79,
+      "density_g_cm3": 1.326,
+      "axial_tilt_deg": 3.13,
+      "surface_temp_K": 165.0,
+      "atmospheric_pressure_bar": 1000.0,
+      "is_gas_giant": true,
+      "solid_composition_fraction": {
+        "Oxigeno": 0.450,
+        "Hierro": 0.200,
+        "Silicio": 0.150,
+        "Magnesio": 0.100,
+        "Agua_Hielo": 0.100
+      },
+      "atmospheric_composition_fraction": {
+        "Hidrogeno": 0.898,
+        "Helio": 0.102,
+        "Metano": 0.003,
+        "Amoniaco": 0.00026
+      }
+    },
+    "Saturn": {
+      "mass_kg": 5.6834e26,
+      "radius_km": 58232.0,
+      "gravity_m_s2": 10.44,
+      "density_g_cm3": 0.687,
+      "axial_tilt_deg": 26.73,
+      "surface_temp_K": 134.0,
+      "atmospheric_pressure_bar": 1000.0,
+      "is_gas_giant": true,
+      "solid_composition_fraction": {
+        "Oxigeno": 0.400,
+        "Hierro": 0.200,
+        "Silicio": 0.150,
+        "Agua_Hielo": 0.150,
+        "Magnesio": 0.100
+      },
+      "atmospheric_composition_fraction": {
+        "Hidrogeno": 0.963,
+        "Helio": 0.0325,
+        "Metano": 0.0045,
+        "Amoniaco": 0.00012
+      }
+    },
+    "Uranus": {
+      "mass_kg": 8.6813e25,
+      "radius_km": 25362.0,
+      "gravity_m_s2": 8.69,
+      "density_g_cm3": 1.270,
+      "axial_tilt_deg": 97.77,
+      "surface_temp_K": 76.0,
+      "atmospheric_pressure_bar": 1000.0,
+      "is_gas_giant": true,
+      "solid_composition_fraction": {
+        "Agua_Hielo": 0.500,
+        "Metano_Hielo": 0.200,
+        "Amoniaco_Hielo": 0.100,
+        "Oxigeno": 0.100,
+        "Silicio": 0.050,
+        "Hierro": 0.050
+      },
+      "atmospheric_composition_fraction": {
+        "Hidrogeno": 0.825,
+        "Helio": 0.152,
+        "Metano": 0.023
+      }
+    },
+    "Neptune": {
+      "mass_kg": 1.02413e26,
+      "radius_km": 24622.0,
+      "gravity_m_s2": 11.15,
+      "density_g_cm3": 1.638,
+      "axial_tilt_deg": 28.32,
+      "surface_temp_K": 72.0,
+      "atmospheric_pressure_bar": 1000.0,
+      "is_gas_giant": true,
+      "solid_composition_fraction": {
+        "Agua_Hielo": 0.500,
+        "Amoniaco_Hielo": 0.150,
+        "Metano_Hielo": 0.150,
+        "Oxigeno": 0.080,
+        "Hierro": 0.060,
+        "Silicio": 0.060
+      },
+      "atmospheric_composition_fraction": {
+        "Hidrogeno": 0.800,
+        "Helio": 0.190,
+        "Metano": 0.010
+      }
+    },
+    "Pluto": {
+      "mass_kg": 1.303e22,
+      "radius_km": 1188.3,
+      "gravity_m_s2": 0.62,
+      "density_g_cm3": 1.854,
+      "axial_tilt_deg": 122.53,
+      "surface_temp_K": 44.0,
+      "atmospheric_pressure_bar": 0.00001,
+      "is_gas_giant": false,
+      "solid_composition_fraction": {
+        "Agua_Hielo": 0.300,
+        "Oxigeno": 0.300,
+        "Silicio": 0.200,
+        "Hierro": 0.150,
+        "Nitrogeno_Solido": 0.030,
+        "Metano_Hielo": 0.020
+      },
+      "atmospheric_composition_fraction": {
+        "Nitrogeno": 0.990,
+        "Metano": 0.005,
+        "Monoxido_de_Carbono": 0.005
+      }
+    }
+  }
+}
