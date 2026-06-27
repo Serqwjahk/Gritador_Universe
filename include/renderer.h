@@ -223,6 +223,13 @@ inline Color ComputeBodyColor(const Body& b, const Vector3& drawPos,
 struct ShaderLocs {
     int lightCount, lightPos, lightColor;
     int lightLum[MAX_LIGHTS];
+    int lightRadius[MAX_LIGHTS];
+
+    int occluderCount;
+    int occluderPos;
+    int occluderRadius;
+
+    int renderScale;
     int viewPos, colDiffuse;
     int temp, heatSpike, isStar;
     int ambientStrength, ambientColor;
@@ -249,6 +256,11 @@ struct ShaderLocs {
     // en shaders.h): aplica a TODOS los cuerpos (rocosos y gigantes), no
     // solo a los rocosos -- se declara aparte del bloque rpXxx.
     int axialTilt;
+    // Sombra de anillos sobre el cuerpo
+    int hasRings;
+    int ringInnerRadius;
+    int ringOuterRadius;
+    int ringShadowStrength;
     // Deformacion "papa" (Sistema 5, ver MAX_DEFORM en constants.h y
     // potatoDisp en VERTEX_SHADER_SRC): aplica a TODOS los cuerpos (0 para
     // planetas, >0 para fragmentos/asteroides pequenos) -- igual que
@@ -274,8 +286,6 @@ inline ShaderLocs GetShaderLocs(Shader& shader) {
     locs.lightCount       = GetShaderLocation(shader, "lightCount");
     locs.lightPos         = GetShaderLocation(shader, "lightPos[0]");
     locs.lightColor       = GetShaderLocation(shader, "lightColor[0]");
-    for (int i = 0; i < MAX_LIGHTS; ++i)
-        locs.lightLum[i]  = GetShaderLocation(shader, TextFormat("lightLum[%d]", i));
     locs.viewPos          = GetShaderLocation(shader, "viewPos");
     locs.colDiffuse       = GetShaderLocation(shader, "colDiffuse");
     locs.temp             = GetShaderLocation(shader, "temp");
@@ -335,6 +345,11 @@ inline ShaderLocs GetShaderLocs(Shader& shader) {
     // Inclinacion axial (todos los cuerpos, ver undoAxialTilt en shaders.h)
     locs.axialTilt        = GetShaderLocation(shader, "uAxialTilt");
 
+    locs.hasRings           = GetShaderLocation(shader, "uHasRings");
+    locs.ringInnerRadius    = GetShaderLocation(shader, "uRingInnerRadius");
+    locs.ringOuterRadius    = GetShaderLocation(shader, "uRingOuterRadius");
+    locs.ringShadowStrength = GetShaderLocation(shader, "uRingShadowStrength");
+
     // Deformacion "papa" (todos los cuerpos, ver potatoDisp en shaders.h)
     locs.potatoAmp        = GetShaderLocation(shader, "uPotatoAmp");
 
@@ -358,6 +373,17 @@ inline ShaderLocs GetShaderLocs(Shader& shader) {
     locs.rpImpactEnergy  = GetShaderLocation(shader, "uImpactEnergy[0]");
     locs.rpImpactAge     = GetShaderLocation(shader, "uImpactAge[0]");
     locs.rpImpactCount   = GetShaderLocation(shader, "uImpactCount");
+
+    for (int i = 0; i < MAX_LIGHTS; ++i) {
+        locs.lightLum[i]    = GetShaderLocation(shader, TextFormat("lightLum[%d]", i));
+        locs.lightRadius[i] = GetShaderLocation(shader, TextFormat("lightRadius[%d]", i));
+    }
+
+    locs.occluderCount  = GetShaderLocation(shader, "occluderCount");
+    locs.occluderPos    = GetShaderLocation(shader, "occluderPos[0]");
+    locs.occluderRadius = GetShaderLocation(shader, "occluderRadius[0]");
+    locs.renderScale    = GetShaderLocation(shader, "uRenderScale");
+
     return locs;
 }
 
@@ -369,71 +395,232 @@ inline ShaderLocs GetShaderLocs(Shader& shader) {
 // calientes como para sumarse como fuente de luz real para sus vecinos.
 constexpr double DRAPER_POINT_K = 700.0;
 
-// ── Upload de uniforms globales (luz, cámara) ────────────────
-// Fuentes de luz reales: estrellas (luminosity ya en Watts, ver catalog.h)
-// y, ademas, cualquier cuerpo NO-estrella lo bastante caliente (>DRAPER_POINT_K,
-// p.ej. un planeta recien fundido por un impacto o en orbita rasante a su
-// estrella) -- su luminosidad efectiva se estima con la misma ley de
-// Stefan-Boltzmann que ya usa UpdateBodiesState (main.cpp) para fijar la
-// temperatura de las estrellas: L = 4*pi*R^2*sigma*T^4. Asi "cuanto mas
-// caliente, mas ilumina" es UNA sola regla fisica para cualquier cuerpo,
-// no una excepcion especial de las estrellas.
+inline Vector3 KelvinToRGBVec(float kelvin)
+{
+    kelvin = ClampF(kelvin, 800.0f, 40000.0f);
+    float t = kelvin / 100.0f;
+
+    float r, g, b;
+
+    if (kelvin <= 6600.0f) {
+        r = 255.0f;
+        g = 99.4708025861f * logf(std::max(t, 0.01f)) - 161.1195681661f;
+        if (kelvin <= 1900.0f)
+            b = 0.0f;
+        else
+            b = 138.5177312231f * logf(std::max(t - 10.0f, 0.01f)) - 305.0447927307f;
+    } else {
+        float x = std::max(t - 60.0f, 0.01f);
+        r = 329.698727446f * powf(x, -0.1332047592f);
+        g = 288.1221695283f * powf(x, -0.0755148492f);
+        b = 255.0f;
+    }
+
+    return {
+        ClampF(r / 255.0f, 0.0f, 1.0f),
+        ClampF(g / 255.0f, 0.0f, 1.0f),
+        ClampF(b / 255.0f, 0.0f, 1.0f)
+    };
+}
+
 inline void UploadLightUniforms(Shader& shader, const ShaderLocs& locs,
                                   const std::vector<Body>& bodies, const Camera3D& camera)
 {
-    struct LightSrc { Vector3D pos; double lum; };
-    std::vector<LightSrc> stars, hotBodies;
+    struct LightSrc {
+        Vector3D pos;
+        double lum = 0.0;
+        double radius = 0.0;
+        double temperature = 5778.0;
+        bool fake = false;
+    };
+
+    std::vector<LightSrc> stars;
+    std::vector<LightSrc> hotBodies;
+
     for (const Body& b : bodies) {
         if (b.isStar) {
-            if (b.mass > 0.0 && b.luminosity > 0.0) stars.push_back({b.pos, b.luminosity});
-        } else if (b.temperature > DRAPER_POINT_K) {
+            if (b.mass > 0.0 && b.luminosity > 0.0 && b.radius > 0.0) {
+                stars.push_back({
+                    b.pos,
+                    b.luminosity,
+                    b.radius,
+                    b.temperature,
+                    false
+                });
+            }
+        } else if (b.temperature > DRAPER_POINT_K && b.radius > 0.0) {
             double effLum = 4.0 * PI_D * b.radius * b.radius * SIGMA * std::pow(b.temperature, 4.0);
-            hotBodies.push_back({b.pos, effLum});
+            hotBodies.push_back({
+                b.pos,
+                effLum,
+                b.radius,
+                b.temperature,
+                false
+            });
         }
     }
-    std::sort(stars.begin(), stars.end(), [](const LightSrc& a, const LightSrc& b){ return a.lum > b.lum; });
-    std::sort(hotBodies.begin(), hotBodies.end(), [](const LightSrc& a, const LightSrc& b){ return a.lum > b.lum; });
 
-    // Las estrellas tienen prioridad sobre los huecos restantes; los
-    // cuerpos calientes (sin ser estrella) solo llenan lo que sobra del
-    // presupuesto de MAX_LIGHTS, de mas a menos luminosos.
+    std::sort(stars.begin(), stars.end(),
+              [](const LightSrc& a, const LightSrc& b) {
+                  return a.lum > b.lum;
+              });
+
+    std::sort(hotBodies.begin(), hotBodies.end(),
+              [](const LightSrc& a, const LightSrc& b) {
+                  return a.lum > b.lum;
+              });
+
     std::vector<LightSrc> lights = stars;
-    if ((int)lights.size() < MAX_LIGHTS)
+
+    if ((int)lights.size() < MAX_LIGHTS) {
         for (const LightSrc& h : hotBodies) {
             if ((int)lights.size() >= MAX_LIGHTS) break;
             lights.push_back(h);
         }
+    }
+
+    if (g_fakeLightEnabled && (int)lights.size() < MAX_LIGHTS) {
+        LightSrc fakeLight{};
+
+        // Luz falsa tipo "estrella de relleno", NO linterna de cámara.
+        //
+        // Antes estaba en camera.position con 0.005 L_SUN y radio 0:
+        // eso la convertía en una fuente cercana/puntual. Resultado:
+        // hotspots, iluminación dependiente de la cámara y aspecto artificial.
+        //
+        // Ahora se coloca muy lejos en una dirección global fija,
+        // con luminosidad calibrada para producir una irradiancia media
+        // parecida a Sol-a-1UA en el rango visual del shader.
+        // Dirección FIJA de la estrella falsa en espacio de render.
+        // No depende de la cámara. Cambia estos valores si quieres que la luz venga
+        // desde otro ángulo global del universo.
+        //
+        // Convención: este vector apunta DESDE los cuerpos HACIA la fuente de luz.
+        const Vector3 FAKE_LIGHT_DIR = Vector3Normalize({ -0.45f, 0.35f, 0.82f });
+
+        // Distancia en unidades de render. Grande = rayos casi paralelos.
+        // Al calibrar la luminosidad con esta misma distancia, aumentar este valor
+        // NO reduce la intensidad media: solo hace la luz más direccional/paralela.
+        constexpr float FAKE_LIGHT_DIST_DRAW = 10000.0f;
+
+        // Intensidad visual deseada en unidades de "Sol en Tierra ~= 1".
+        // 1.0 = luz solar media; 2.0-3.0 = relleno más claro.
+        constexpr double FAKE_LIGHT_REL_IRRADIANCE = 1.8;
+
+        // Posición fija relativa al origen de render actual.
+        // ToPhysPos() la convierte a coordenadas físicas alrededor de g_renderOrigin,
+        // y luego ToDrawPos() volverá a dejarla en esta misma posición de render.
+        // Resultado: dirección global estable, no pegada a la cámara.
+        Vector3 fakeDrawPos = Vector3Scale(FAKE_LIGHT_DIR, FAKE_LIGHT_DIST_DRAW);
+
+        double fakeDistMeters = std::max(1.0, (double)FAKE_LIGHT_DIST_DRAW / RENDER_SCALE);
+
+        // physicalLightAttenuation() hace:
+        // irradiance = lum / (4*pi*d^2)
+        // relative = irradiance / 1361
+        //
+        // Por tanto invertimos esa fórmula para que, a FAKE_LIGHT_DIST_DRAW,
+        // la luz falsa entregue FAKE_LIGHT_REL_IRRADIANCE.
+        fakeLight.pos = ToPhysPos(fakeDrawPos);
+        fakeLight.lum = FAKE_LIGHT_REL_IRRADIANCE * 1361.0 * 4.0 * PI_D * fakeDistMeters * fakeDistMeters;
+
+        // Radio angular parecido al Sol visto desde la Tierra:
+        // R_sun / 1UA ~= 0.00465 rad.
+        // Esto permite que lightVisibilityFromPoint() la trate como disco
+        // luminoso no degenerado, con eclipses/penumbras más naturales.
+        fakeLight.radius = fakeDistMeters * 0.00465;
+
+        // Color solar realista.
+        fakeLight.temperature = 5778.0;
+
+        // false para que use KelvinToRGBVec(5778K), igual que una estrella real,
+        // en vez de blanco puro artificial.
+        fakeLight.fake = false;
+
+        lights.push_back(fakeLight);
+    }
 
     Vector3 posArr[MAX_LIGHTS]{};
     Vector3 colArr[MAX_LIGHTS]{};
     float   lumArr[MAX_LIGHTS]{};
-    int     count = (int)lights.size();
+    float   radiusArr[MAX_LIGHTS]{};
+
+    int count = std::min((int)lights.size(), MAX_LIGHTS);
+
     for (int i = 0; i < count; ++i) {
         posArr[i] = ToDrawPos(lights[i].pos);
-        // Luz BLANCA pura: el color visual de un cuerpo (s.color, p.ej.
-        // GOLD para el Sol, o el tinte de magma de un planeta fundido) es
-        // para DIBUJAR ese cuerpo, no para tenir la luz que ilumina el
-        // resto de la escena -- usarlo como lightColor banaba TODOS los
-        // planetas/lunas en el mismo tinte ("efecto esponja oxidada"). En
-        // el espacio real la luz incidente se percibe blanca.
-        colArr[i] = { 1.0f, 1.0f, 1.0f };
+
+        colArr[i] = lights[i].fake
+            ? Vector3{1.0f, 1.0f, 1.0f}
+            : KelvinToRGBVec((float)lights[i].temperature);
+
         lumArr[i] = (float)std::max(1.0, lights[i].lum);
+        radiusArr[i] = (float)std::max(0.0, lights[i].radius * RENDER_SCALE);
     }
 
-    float camPos[3] = { camera.position.x, camera.position.y, camera.position.z };
-    float ambStr    = g_fakeLightEnabled ? 0.15f : 0.0f;
+    float camPos[3] = {
+        camera.position.x,
+        camera.position.y,
+        camera.position.z
+    };
+
+    float ambStr = 0.0f;
     float ambCol[3] = { 1.0f, 1.0f, 1.0f };
+    float renderScale = (float)RENDER_SCALE;
 
     SetShaderValue(shader, locs.lightCount, &count, SHADER_UNIFORM_INT);
+
     if (count > 0) {
         SetShaderValueV(shader, locs.lightPos,   posArr, SHADER_UNIFORM_VEC3, count);
         SetShaderValueV(shader, locs.lightColor, colArr, SHADER_UNIFORM_VEC3, count);
-        for (int i = 0; i < count; ++i)
+
+        // lightRadius es un array GLSL. Usamos la ubicación de lightRadius[0].
+        SetShaderValueV(shader, locs.lightRadius[0], radiusArr, SHADER_UNIFORM_FLOAT, count);
+
+        for (int i = 0; i < count; ++i) {
             SetShaderValue(shader, locs.lightLum[i], &lumArr[i], SHADER_UNIFORM_FLOAT);
+        }
     }
-    SetShaderValue(shader, locs.viewPos,         camPos, SHADER_UNIFORM_VEC3);
-    SetShaderValue(shader, locs.ambientStrength, &ambStr, SHADER_UNIFORM_FLOAT);
-    SetShaderValue(shader, locs.ambientColor,    ambCol,  SHADER_UNIFORM_VEC3);
+
+    SetShaderValue(shader, locs.viewPos,         camPos,       SHADER_UNIFORM_VEC3);
+    SetShaderValue(shader, locs.ambientStrength, &ambStr,      SHADER_UNIFORM_FLOAT);
+    SetShaderValue(shader, locs.ambientColor,    ambCol,       SHADER_UNIFORM_VEC3);
+    SetShaderValue(shader, locs.renderScale,     &renderScale, SHADER_UNIFORM_FLOAT);
+
+    constexpr int MAX_OCCLUDERS_RENDER = 32;
+
+    Vector3 occPos[MAX_OCCLUDERS_RENDER]{};
+    float   occRadius[MAX_OCCLUDERS_RENDER]{};
+    int     occCount = 0;
+
+    std::vector<const Body*> occs;
+    occs.reserve(bodies.size());
+
+    for (const Body& b : bodies) {
+        if (b.mass > 0.0 && b.radius > 0.0) {
+            occs.push_back(&b);
+        }
+    }
+
+    std::sort(occs.begin(), occs.end(),
+              [](const Body* a, const Body* b) {
+                  return a->radius > b->radius;
+              });
+
+    for (const Body* b : occs) {
+        if (occCount >= MAX_OCCLUDERS_RENDER) break;
+
+        occPos[occCount] = ToDrawPos(b->pos);
+        occRadius[occCount] = (float)(b->radius * RENDER_SCALE);
+        occCount++;
+    }
+
+    SetShaderValue(shader, locs.occluderCount, &occCount, SHADER_UNIFORM_INT);
+
+    if (occCount > 0) {
+        SetShaderValueV(shader, locs.occluderPos, occPos, SHADER_UNIFORM_VEC3, occCount);
+        SetShaderValueV(shader, locs.occluderRadius, occRadius, SHADER_UNIFORM_FLOAT, occCount);
+    }
 }
 
 // ── Upload de uniforms por body ──────────────────────────────
@@ -466,6 +653,24 @@ inline void UploadBodyUniforms(Shader& shader, const ShaderLocs& locs, const Bod
     // spin propio del cuerpo pese a la inclinacion.
     float axialTiltRad = b.axialTilt * DEG2RAD;
     SetShaderValue(shader, locs.axialTilt, &axialTiltRad, SHADER_UNIFORM_FLOAT);
+
+    int hasRingsVal = b.hasRings ? 1 : 0;
+
+    // Valores visuales sugeridos.
+    // El anillo dibujado actualmente usa radio exterior ~3.2 * radio visual.
+    // Para la sombra usamos una banda: empieza fuera del planeta y termina
+    // cerca del radio visual del anillo.
+    float ringInnerRadius = b.hasRings ? (float)(b.radius * RENDER_SCALE * 1.35) : 0.0f;
+    float ringOuterRadius = b.hasRings ? (float)(b.radius * RENDER_SCALE * 3.20) : 0.0f;
+
+    // 0.0 = no oscurece, 1.0 = anillo totalmente opaco.
+    // 0.55-0.75 suele verse bien para anillos de polvo/hielo.
+    float ringShadowStrength = b.hasRings ? 0.65f : 0.0f;
+
+    SetShaderValue(shader, locs.hasRings,           &hasRingsVal,          SHADER_UNIFORM_INT);
+    SetShaderValue(shader, locs.ringInnerRadius,    &ringInnerRadius,      SHADER_UNIFORM_FLOAT);
+    SetShaderValue(shader, locs.ringOuterRadius,    &ringOuterRadius,      SHADER_UNIFORM_FLOAT);
+    SetShaderValue(shader, locs.ringShadowStrength, &ringShadowStrength,   SHADER_UNIFORM_FLOAT);
 
     // potatoAmp: 0 para cualquier cuerpo >= DIFFERENTIATION_RADIUS (planetas:
     // sin cambio visual). Crece linealmente hasta MAX_DEFORM por debajo de ese
@@ -937,7 +1142,7 @@ inline void DrawBody(Body& b, const Camera3D& camera, const std::vector<Body>& b
 draw_overlay:
     if (bodyIndex == selectedBodyIdx)
         DrawCircle3D(p, rR * 1.4f, {0,1,0}, 0.0f, Fade(WHITE, 0.55f));
-    if (b.hasRings)
+    if (b.hasRings && bodyIndex == selectedBodyIdx)
         DrawCircle3D(p, rR * 3.2f, {1,0,0}, 90.0f, Fade(GetColor(0xaaaaaa88), 0.3f));
 }
 
@@ -960,6 +1165,23 @@ inline RockShaderLocs GetRockShaderLocs(Shader& sh) {
     l.ambientStrength   = GetShaderLocation(sh, "uAmbientStrength");
     l.lightIntensity    = GetShaderLocation(sh, "uLightIntensity");
     return l;
+}
+
+inline float PhysicalLightIntensityRelative(double lumWatts, float distDraw)
+{
+    double distMeters = std::max(1.0, (double)distDraw / RENDER_SCALE);
+    double irradiance = lumWatts / (4.0 * PI_D * distMeters * distMeters);
+    double rel = irradiance / 1361.0; // Sol en Tierra ~= 1
+    return (float)ClampD(rel, 0.0, 80.0);
+}
+
+inline float VisualLightResponseCPU(float physicalAtten)
+{
+    return ClampF(
+        logf(1.0f + physicalAtten * 1.75f) / logf(1.0f + 1.75f),
+        0.0f,
+        4.0f
+    );
 }
 
 // Misma formula/constante que lightLumFactor() en shaders.h (duplicada a
@@ -1007,8 +1229,17 @@ inline void DrawDustField3D(const std::vector<DustParticle>& dust,
         Vector3 starDraw = ToDrawPos(mainStar->pos);
         globalLightDist = Vector3Length(starDraw); // distancia foco-de-camara -> estrella
         globalLightDir  = Vector3Normalize(starDraw);
+    } else if (g_fakeLightEnabled) {
+        // Misma dirección fija que la estrella falsa de UploadLightUniforms().
+        // No depende de la cámara.
+        const Vector3 FAKE_LIGHT_DIR = Vector3Normalize({ -0.45f, 0.35f, 0.82f });
+
+        globalLightDir  = FAKE_LIGHT_DIR;
+        globalLightDist = 10000.0f;
     }
-    const float ambStrength = g_fakeLightEnabled ? 0.15f : 0.0f;
+    // Ambiente mínimo solo para evitar negro absoluto en anillos/polvo.
+    // La iluminación principal sigue viniendo de la difusa real/falsa.
+    const float ambStrength = 0.025f;
 
     // Lookup id->Body* reconstruido una vez por frame (no por particula):
     // decenas/cientos de 'bodies' contra decenas de miles de particulas de
@@ -1095,18 +1326,23 @@ inline void DrawDustField3D(const std::vector<DustParticle>& dust,
             if (it != hostById.end()) {
                 const Body* host = it->second;
                 hostKey = host->id;
-                if (mainStar) {
-                    Vector3D toStar = NormalizeSafe(mainStarPosPhys - host->pos);
-                    Vector3D rel    = d.pos - host->pos;
-                    // Si la particula esta del lado nocturno (proj<0) Y su
-                    // desplazamiento perpendicular al rayo de luz es menor
-                    // que el radio del planeta, esta geometricamente
-                    // eclipsada -- sombra cilindrica simple (sin penumbra),
-                    // suficiente para que el anillo no brille en su propia
-                    // sombra.
-                    double proj = rel.dot(toStar);
+                if (mainStar || g_fakeLightEnabled) {
+                    // Dirección HACIA la fuente de luz.
+                    //
+                    // - Con estrella real: dirección desde el planeta host hacia la estrella.
+                    // - Con luz falsa: misma dirección fija global usada por UploadLightUniforms().
+                    Vector3D toLight = mainStar
+                        ? NormalizeSafe(mainStarPosPhys - host->pos)
+                        : NormalizeSafe(Vector3D{-0.45, 0.35, 0.82});
+
+                    Vector3D rel = d.pos - host->pos;
+
+                    // Si la partícula está del lado nocturno del planeta host
+                    // respecto a la luz y cae dentro del cilindro de sombra
+                    // proyectado por el planeta, se marca como eclipsada.
+                    double proj = rel.dot(toLight);
                     if (proj < 0.0) {
-                        Vector3D perp = rel - toStar * proj;
+                        Vector3D perp = rel - toLight * proj;
                         if (perp.length() < host->radius) inShadow = true;
                     }
                 }
@@ -1173,9 +1409,14 @@ inline void DrawDustField3D(const std::vector<DustParticle>& dust,
         // (lightLumFactor en shaders.h / LightLumFactor aqui arriba), con el
         // atenuado artistico *0.6 de siempre para no saturar 'uBaseColor'.
         // 0 si no hay estrella (sin luz real que aportar, solo ambiente).
-        float intensity = mainStar
-            ? ClampF(2000.0f * LightLumFactor(mainStar->luminosity) / std::max(lightDistDraw, 1.0f), 0.0f, 1.5f) * 0.6f
-            : 0.0f;
+        float intensity = 0.0f;
+
+        if (mainStar) {
+            float phys = PhysicalLightIntensityRelative(mainStar->luminosity, lightDistDraw);
+            intensity = VisualLightResponseCPU(phys) * 0.6f;
+        } else if (g_fakeLightEnabled) {
+            intensity = 0.6f;
+        }
         SetShaderValue(rockMaterial.shader, rLocs.lightIntensity, &intensity, SHADER_UNIFORM_FLOAT);
         SetShaderValue(rockMaterial.shader, rLocs.ambientStrength, &ambStrength, SHADER_UNIFORM_FLOAT);
 

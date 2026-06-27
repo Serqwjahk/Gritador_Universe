@@ -102,6 +102,7 @@ void main() {
 static const char* FRAGMENT_SHADER_SRC = R"GLSL(
 #version 330
 #define MAX_LIGHTS 8
+#define MAX_OCCLUDERS 32
 in  vec3 fragNormal;
 in  vec3 fragPosition;
 in  vec2 fragTexCoord;
@@ -111,10 +112,19 @@ uniform sampler2D texture0;
 
 uniform vec4  colDiffuse;
 uniform vec3  viewPos;
+
 uniform int   lightCount;
 uniform vec3  lightPos[MAX_LIGHTS];
 uniform vec3  lightColor[MAX_LIGHTS];
 uniform float lightLum[MAX_LIGHTS];
+uniform float lightRadius[MAX_LIGHTS];
+
+uniform int   occluderCount;
+uniform vec3  occluderPos[MAX_OCCLUDERS];
+uniform float occluderRadius[MAX_OCCLUDERS];
+
+uniform float uRenderScale;
+
 uniform float ambientStrength;
 uniform vec3  ambientColor;
 uniform float temp;
@@ -242,6 +252,14 @@ uniform float uSurfaceSpin;
 // orbitar el patron entero giraria con la inclinacion en vez de
 // permanecer fijo respecto al cuerpo.
 uniform float uAxialTilt;
+
+// Sombra de anillos del cuerpo actual.
+// El anillo se modela como una banda plana centrada en uBodyCenter,
+// alineada con el ecuador visual del cuerpo.
+uniform int   uHasRings;
+uniform float uRingInnerRadius;
+uniform float uRingOuterRadius;
+uniform float uRingShadowStrength;
 
 // Parametros estelares extendidos
 uniform float stellarMass;
@@ -658,6 +676,182 @@ vec3 blackBodyColor(float tK) {
 float lightLumFactor(float lum) {
     const float L_SUN_REF = 3.828e26; // ver constants.h::L_SUN
     return clamp(pow(lum / L_SUN_REF, 0.25), 0.15, 3.0);
+}
+
+float physicalLightAttenuation(float lumWatts, float distDraw)
+{
+    // distDraw está en unidades de render.
+    // uRenderScale convierte unidades de render -> metros:
+    // distMeters = distDraw / RENDER_SCALE.
+    float distMeters = max(distDraw / max(uRenderScale, 1e-20), 1.0);
+
+    // Irradiancia física: W/m²
+    float irradiance = lumWatts / (4.0 * 3.14159265359 * distMeters * distMeters);
+
+    // Normalización visual: 1361 W/m² = constante solar en la Tierra.
+    // Resultado: Sol a 1 UA ~= 1.0
+    float relativeToEarthSun = irradiance / 1361.0;
+
+    // Se deja margen HDR; el tonemapping posterior ya comprime.
+    return clamp(relativeToEarthSun, 0.0, 80.0);
+}
+
+// Convierte irradiancia física relativa en una respuesta visual comprimida.
+// Mantiene Sol a 1 UA cerca de 1.0, pero evita que planetas muy cercanos
+// a una estrella se quemen como blanco puro por recibir valores enormes.
+float visualLightResponse(float physicalAtten)
+{
+    return clamp(log(1.0 + physicalAtten * 1.75) / log(1.0 + 1.75), 0.0, 4.0);
+}
+
+// Terminador suave para capas atmosféricas/nubes.
+// A diferencia de max(dot(N,L),0), permite una transición crepuscular,
+// especialmente en atmósferas densas.
+float softTerminator(vec3 N, vec3 L, float atmosDensity)
+{
+    float d = dot(N, L);
+    float a = mix(-0.03, -0.22, clamp(atmosDensity, 0.0, 1.0));
+    float b = mix( 0.08,  0.28, clamp(atmosDensity, 0.0, 1.0));
+    return smoothstep(a, b, d);
+}
+
+float circleOverlapArea(float R, float r, float d)
+{
+    // Área de intersección entre dos discos de radios R y r separados d.
+    // Devuelve área absoluta, no normalizada.
+
+    R = max(R, 1e-7);
+    r = max(r, 1e-7);
+    d = max(d, 0.0);
+
+    if (d >= R + r) return 0.0;
+
+    if (d <= abs(R - r))
+    {
+        float m = min(R, r);
+        return 3.14159265359 * m * m;
+    }
+
+    float R2 = R * R;
+    float r2 = r * r;
+    float d2 = d * d;
+
+    float a = acos(clamp((d2 + R2 - r2) / max(2.0 * d * R, 1e-7), -1.0, 1.0));
+    float b = acos(clamp((d2 + r2 - R2) / max(2.0 * d * r, 1e-7), -1.0, 1.0));
+
+    float c = 0.5 * sqrt(max(
+        (-d + R + r) *
+        ( d + R - r) *
+        ( d - R + r) *
+        ( d + R + r), 0.0));
+
+    return R2 * a + r2 * b - c;
+}
+
+float lightVisibilityFromPoint(vec3 pointPos, int lightIndex)
+{
+    vec3 toLight = lightPos[lightIndex] - pointPos;
+    float lightDist = length(toLight);
+
+    if (lightDist <= 1e-5) return 1.0;
+
+    vec3 lightDir = toLight / lightDist;
+
+    // Radio angular aparente de la fuente luminosa.
+    float sourceAngularRadius = atan(lightRadius[lightIndex] / max(lightDist, 1e-5));
+
+    // Para luces puntuales/falsas o cuerpos calientes diminutos:
+    // valor pequeño pero no cero para evitar divisiones degeneradas.
+    sourceAngularRadius = max(sourceAngularRadius, 1e-5);
+
+    float visibility = 1.0;
+
+    for (int j = 0; j < occluderCount && j < MAX_OCCLUDERS; j++)
+    {
+        vec3 toOcc = occluderPos[j] - pointPos;
+        float occDist = length(toOcc);
+        float occR = occluderRadius[j];
+
+        if (occR <= 0.0 || occDist <= 1e-5) continue;
+
+        // Evitar que el propio cuerpo receptor se eclipse a sí mismo.
+        // uBodyCenter es el centro del cuerpo que se está dibujando.
+        if (length(occluderPos[j] - uBodyCenter) < max(occR * 0.01, 1e-6))
+            continue;
+
+        // Evitar que la propia fuente luminosa cuente como bloqueador.
+        if (length(occluderPos[j] - lightPos[lightIndex]) < max(occR * 0.01, 1e-6))
+            continue;
+
+        // El bloqueador debe estar entre el punto sombreado y la luz.
+        float along = dot(toOcc, lightDir);
+        if (along <= 0.0 || along >= lightDist) continue;
+
+        vec3 closest = lightDir * along;
+        float perpDist = length(toOcc - closest);
+
+        float blockerAngularRadius = asin(clamp(occR / max(occDist, 1e-5), 0.0, 0.999));
+        float separationAngular    = atan(perpDist / max(along, 1e-5));
+
+        // Fracción del disco luminoso tapada por el bloqueador.
+        float overlap = circleOverlapArea(sourceAngularRadius, blockerAngularRadius, separationAngular);
+        float sourceArea = 3.14159265359 * sourceAngularRadius * sourceAngularRadius;
+
+        float blocked = clamp(overlap / max(sourceArea, 1e-7), 0.0, 1.0);
+
+        // Múltiples cuerpos pueden tapar parte de la fuente.
+        visibility *= (1.0 - blocked);
+
+        if (visibility <= 0.001)
+            return 0.0;
+    }
+
+    return clamp(visibility, 0.0, 1.0);
+}
+
+float ringShadowTransmission(vec3 pointPos, int lightIndex)
+{
+    if (uHasRings == 0) return 1.0;
+    if (uRingOuterRadius <= uRingInnerRadius) return 1.0;
+    if (uRingShadowStrength <= 0.001) return 1.0;
+
+    vec3 toLight = lightPos[lightIndex] - pointPos;
+    float lightDist = length(toLight);
+    if (lightDist <= 1e-5) return 1.0;
+
+    vec3 L = toLight / lightDist;
+
+    // El plano del anillo se alinea con el ecuador visual del cuerpo.
+    // TidalBodyTransform aplica MatrixRotateX(axialTilt), así que el eje Y
+    // local del planeta en mundo queda aproximadamente como:
+    // normal = R_x(uAxialTilt) * vec3(0,1,0) = vec3(0, cos, sin).
+    vec3 ringNormal = normalize(vec3(0.0, cos(uAxialTilt), sin(uAxialTilt)));
+
+    float denom = dot(L, ringNormal);
+
+    // Si el rayo es casi paralelo al plano del anillo, no calculamos cruce
+    // para evitar parpadeos numéricos.
+    if (abs(denom) < 1e-5) return 1.0;
+
+    // Intersección del rayo pointPos -> luz con el plano del anillo.
+    float t = dot(uBodyCenter - pointPos, ringNormal) / denom;
+
+    // El anillo debe estar entre el punto sombreado y la luz.
+    if (t <= 0.0 || t >= lightDist) return 1.0;
+
+    vec3 hitPos = pointPos + L * t;
+    float ringR = length(hitPos - uBodyCenter);
+
+    // Bordes suaves para que la sombra no sea una línea dura perfecta.
+    float bandWidth = max(uRingOuterRadius - uRingInnerRadius, 1e-5);
+    float feather = max(bandWidth * 0.08, uRingOuterRadius * 0.015);
+
+    float innerMask = smoothstep(uRingInnerRadius, uRingInnerRadius + feather, ringR);
+    float outerMask = 1.0 - smoothstep(uRingOuterRadius - feather, uRingOuterRadius, ringR);
+    float ringMask = clamp(innerMask * outerMask, 0.0, 1.0);
+
+    // Transmisión final: 1.0 sin sombra, menor cuando cruza el anillo.
+    return mix(1.0, 1.0 - uRingShadowStrength, ringMask);
 }
 
 // ============================================================
@@ -1150,14 +1344,19 @@ void drawGasGiant() {
     atmosCol = clamp(atmosCol, 0.0, 1.6);
 
     // ── 7. ILUMINACION: volumen atmosferico + terminador ESTRICTO ──
-    vec3 mainL = (lightCount > 0) ? normalize(lightPos[0] - fragPosition) : vec3(0.0, 0.0, 1.0);
+    vec3 mainL = (lightCount > 0) ? normalize(lightPos[0] - fragPosition) : vec3(0.0);
 
     // Mascara de luz estricta: exactamente 0.0 en el lado nocturno.
     // CUALQUIER brillo de borde/nubes altas/atmosfera se multiplica
     // por esta mascara (o por ndl en el bucle de luces), de modo que
     // el lado opuesto al sol queda en negro total — sin "canicas
     // magicas" brillando en el limbo nocturno.
-    float litMask = max(dot(N, mainL), 0.0);
+    float litMask = 0.0;
+    if (lightCount > 0) {
+        litMask = softTerminator(N, mainL, atmosphereDensity)
+        * lightVisibilityFromPoint(fragPosition, 0)
+        * ringShadowTransmission(fragPosition, 0);
+    }
 
     // Limb darkening: el espesor atmosferico oscurece el borde visible
     // (aproximacion tipo Rayleigh) en el lado iluminado, dando
@@ -1174,13 +1373,14 @@ void drawGasGiant() {
 
     for (int i = 0; i < lightCount && i < MAX_LIGHTS; i++) {
         vec3  L     = normalize(lightPos[i] - fragPosition);
-        float ndl   = max(dot(N, L), 0.0);
-        float atten = clamp(2000.0 * lightLumFactor(lightLum[i]) / max(length(lightPos[i] - fragPosition), 1.0), 0.0, 1.5);
-        rgb += shadedCol * lightColor[i] * ndl * atten;
+        float ndl   = mix(max(dot(N, L), 0.0), softTerminator(N, L, atmosphereDensity), 0.35);
+        float atten = visualLightResponse(physicalLightAttenuation(lightLum[i], length(lightPos[i] - fragPosition)));
+        float vis = lightVisibilityFromPoint(fragPosition, i) * ringShadowTransmission(fragPosition, i);
+        rgb += shadedCol * lightColor[i] * ndl * atten * vis;
 
         // Brillo de nubes altas cerca del limbo: solo en el lado
         // diurno (gateado por ndl) -> 0.0 en el lado nocturno.
-        rgb += ggHighCloudColor * highCloudMask * limbDark * ndl * atten * 0.5;
+        rgb += ggHighCloudColor * highCloudMask * limbDark * ndl * atten * vis * 0.5;
     }
 
     // Dispersion atmosferica en el limbo: solo en el lado iluminado
@@ -1258,7 +1458,7 @@ void drawRockyPlanet() {
     // Usando uBodyCenter, lightDir y atten son CONSTANTES sobre toda la
     // esfera: el Sol ilumina el planeta entero como una fuente lejana
     // real, con un terminador recto.
-    vec3 mainL = (lightCount > 0) ? normalize(lightPos[0] - uBodyCenter) : vec3(0.0, 0.0, 1.0);
+    vec3 mainL = (lightCount > 0) ? normalize(lightPos[0] - uBodyCenter) : vec3(0.0);
 
     // ── TIEMPO: las nubes co-rotan con la superficie + FLUJO ZONAL ──
     // (circulacion atmosferica tipo Coriolis con bandas de latitud
@@ -1764,10 +1964,11 @@ void drawRockyPlanet() {
         // fuente, ver mas arriba) en vez de solo distancia.
         vec3  L     = normalize(lightPos[i] - uBodyCenter);
         float ndl   = max(dot(Nf, L), 0.0);
-        float atten = clamp(2000.0 * lightLumFactor(lightLum[i]) / max(length(lightPos[i] - uBodyCenter), 1.0), 0.0, 1.5);
+        float atten = visualLightResponse(physicalLightAttenuation(lightLum[i], length(lightPos[i] - uBodyCenter)));
         float spec  = pow(max(dot(Nf, normalize(L + V)), 0.0), mix(8.0, 256.0, 1.0 - roughness)) * specStrength;
-        rgb += baseColor * lightColor[i] * ndl * atten;
-        rgb += lightColor[i] * spec * ndl * atten;
+        float vis = lightVisibilityFromPoint(fragPosition, i) * ringShadowTransmission(fragPosition, i);
+        rgb += baseColor * lightColor[i] * ndl * atten * vis;
+        rgb += lightColor[i] * spec * ndl * atten * vis;
     }
 
     // ── 6. ATMOSFERA: PROFUNDIDAD OPTICA (dispersion/extincion) ──
@@ -1787,7 +1988,16 @@ void drawRockyPlanet() {
     if (atmosphereDensity > 0.001) {
         float viewDot      = max(dot(Nf, V), 0.0);
         float opticalDepth = pow(1.0 - viewDot, uAtmosphereFalloff);
-        vec3  atmosTint    = atmosphereColor * mix(0.15, 1.0, litMask);
+        float totalAtmosLight = 0.0;
+        for (int i = 0; i < lightCount && i < MAX_LIGHTS; i++) {
+            vec3 L = normalize(lightPos[i] - uBodyCenter);
+            float atten = visualLightResponse(physicalLightAttenuation(lightLum[i], length(lightPos[i] - uBodyCenter)));
+            float vis = lightVisibilityFromPoint(fragPosition, i) * ringShadowTransmission(fragPosition, i);
+
+            totalAtmosLight += max(dot(Nf, L), 0.0) * atten * vis;
+        }
+        totalAtmosLight = clamp(totalAtmosLight, 0.0, 1.0);
+        vec3  atmosTint    = atmosphereColor * mix(ambientStrength, 1.0, totalAtmosLight);
         rgb = mix(rgb, atmosTint, opticalDepth * atmosphereDensity);
     }
 
@@ -1939,9 +2149,18 @@ void drawAtmosphereShell() {
     // la atmosfera; el lado nocturno se atenua a un resplandor tenue
     // (dispersion residual/crepusculo) en vez de desaparecer de golpe
     // -- terminador difuminado, no un corte duro.
-    vec3  L       = (lightCount > 0) ? normalize(lightPos[0] - uBodyCenter) : vec3(0.0, 0.0, 1.0);
-    float dayMask = smoothstep(-0.35, 0.35, dot(N, L));
-    vec3  rgb     = atmosphereColor * mix(0.12, 1.0, dayMask);
+    float totalLight = 0.0;
+
+    for (int i = 0; i < lightCount && i < MAX_LIGHTS; i++) {
+        vec3 L = normalize(lightPos[i] - uBodyCenter);
+        float atten = visualLightResponse(physicalLightAttenuation(lightLum[i], length(lightPos[i] - uBodyCenter)));
+        float vis = lightVisibilityFromPoint(fragPosition, i) * ringShadowTransmission(fragPosition, i);
+
+        totalLight += softTerminator(N, L, atmosphereDensity) * atten * vis;
+    }
+
+    totalLight = clamp(totalLight, 0.0, 1.0);
+    vec3 rgb = atmosphereColor * (ambientStrength + totalLight);
 
     finalColor = vec4(rgb, alpha);
 }
@@ -1984,11 +2203,36 @@ void drawCloudShell() {
     // (luz respecto a uBodyCenter, rayos paralelos -- ver
     // drawRockyPlanet/drawAtmosphereShell). Lado diurno: nube iluminada
     // por el sol; lado nocturno: solo la luz ambiental tenue.
-    vec3  L        = (lightCount > 0) ? normalize(lightPos[0] - uBodyCenter) : vec3(0.0, 0.0, 1.0);
-    float litMask  = max(dot(N, L), 0.0);
-    // Sin piso fijo (ver drawRockyPlanet): con la luz "falsa" desactivada,
-    // las nubes del lado nocturno tambien quedan negras de verdad.
-    vec3  cloudLit = uCloudColor * (ambientColor * ambientStrength + vec3(litMask));
+
+    float totalLight = 0.0;
+    float totalScatter = 0.0;
+
+    for (int i = 0; i < lightCount && i < MAX_LIGHTS; i++) {
+        vec3 L = normalize(lightPos[i] - uBodyCenter);
+        float atten = visualLightResponse(physicalLightAttenuation(lightLum[i], length(lightPos[i] - uBodyCenter)));
+        float vis = lightVisibilityFromPoint(fragPosition, i) * ringShadowTransmission(fragPosition, i);
+
+        // Para nubes no usamos un corte duro tipo Lambert puro.
+        // Una atmósfera/nube gruesa dispersa luz alrededor del terminador.
+        float daySoft = softTerminator(N, L, atmosphereDensity);
+        float ndl = max(dot(N, L), 0.0);
+
+        totalLight   += ndl * atten * vis;
+        totalScatter += daySoft * atten * vis;
+    }
+
+    totalLight = clamp(totalLight, 0.0, 1.0);
+    totalScatter = clamp(totalScatter, 0.0, 1.0);
+
+    // Nubes finas: más dependientes de luz directa.
+    // Nubes gruesas tipo Venus: más dominadas por dispersión múltiple.
+    float thickCloud = smoothstep(0.8, 1.2, uCloudDensity);
+
+    vec3 directCloud  = uCloudColor * totalLight;
+    vec3 scatterCloud = mix(uCloudColor, atmosphereColor, 0.35) * totalScatter * mix(0.35, 0.95, thickCloud);
+    vec3 ambientCloud = uCloudColor * ambientColor * ambientStrength;
+
+    vec3 cloudLit = ambientCloud + directCloud + scatterCloud;
 
     // Misma profundidad optica (single-scattering) que el paso 6 de
     // drawRockyPlanet: cerca del limbo las nubes tambien se funden con
@@ -1997,7 +2241,7 @@ void drawCloudShell() {
     if (atmosphereDensity > 0.001) {
         float viewDot      = max(dot(N, V), 0.0);
         float opticalDepth = pow(1.0 - viewDot, uAtmosphereFalloff);
-        vec3  atmosTint    = atmosphereColor * mix(0.15, 1.0, litMask);
+        vec3  atmosTint    = atmosphereColor * mix(ambientStrength, 1.0, totalLight);
         cloudLit = mix(cloudLit, atmosTint, opticalDepth * atmosphereDensity);
     }
 
@@ -2008,7 +2252,7 @@ void drawCloudShell() {
     // es visible desde el espacio. Con alfa<1, el relieve de alto
     // contraste de la corteza (bump-mapping del "infierno basaltico") se
     // filtraba a traves de la capa ("relieve visible a traves del gas").
-    float cloudAlpha = (uCloudDensity >= 1.0) ? 1.0 : cloudCoverage * 0.85;
+    float cloudAlpha = (uCloudDensity >= 1.0) ? 0.96 : cloudCoverage * 0.85;
     finalColor = vec4(cloudLit, cloudAlpha);
 }
 
@@ -2052,16 +2296,25 @@ void main() {
             mix(-0.04, -0.20, atmosphereDensity),
             mix( 0.04,  0.10, atmosphereDensity),
             dot(N, L)) * max(dot(N, L), 0.0);
+
         float spec  = pow(max(dot(N, normalize(L + V)), 0.0), 32.0) * 0.08;
-        // atten ponderado por la luminosidad REAL de la fuente (ver
-        // lightLumFactor mas arriba), no solo por distancia.
-        float atten = clamp(2000.0 * lightLumFactor(lightLum[i]) / max(length(lightPos[i] - fragPosition), 1.0), 0.0, 1.5);
-        rgb += (baseColor * lightColor[i] * ndl + lightColor[i] * spec) * atten;
+        float atten = visualLightResponse(physicalLightAttenuation(lightLum[i], length(lightPos[i] - fragPosition)));
+        float vis = lightVisibilityFromPoint(fragPosition, i) * ringShadowTransmission(fragPosition, i);
+        rgb += (baseColor * lightColor[i] * ndl + lightColor[i] * spec) * atten * vis;
     }
 
     if (atmosphereDensity > 0.001) {
         float limb = pow(1.0 - max(dot(N, V), 0.0), uAtmosphereFalloff) * atmosphereDensity;
-        rgb += atmosphereColor * limb * (0.4 + clamp(dot(N, normalize(lightPos[0] - fragPosition)), 0.0, 1.0) * 0.8);
+        float totalLight = 0.0;
+        for (int i = 0; i < lightCount && i < MAX_LIGHTS; i++) {
+            vec3 L = normalize(lightPos[i] - fragPosition);
+            float atten = visualLightResponse(physicalLightAttenuation(lightLum[i], length(lightPos[i] - fragPosition)));
+            float vis = lightVisibilityFromPoint(fragPosition, i) * ringShadowTransmission(fragPosition, i);
+
+            totalLight += max(dot(N, L), 0.0) * atten * vis;
+        }
+        totalLight = clamp(totalLight, 0.0, 1.0);
+        rgb += atmosphereColor * limb * (ambientStrength + totalLight * 0.8);
     }
 
     // Auto-brillo por calor (cuerpo negro) -- mismo termino/umbral que
