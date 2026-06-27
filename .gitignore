@@ -1,46 +1,88 @@
+# Build directories
 build/
 build-*/
+build-win/
 cmake-build-*/
 out/
 bin/
 obj/
 
+# Export/package directories
+export-linux/
+export-windows/
+release/
+dist/
+
+# CMake generated files
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
 compile_commands.json
+CTestTestfile.cmake
+Testing/
+install_manifest.txt
+*.cmake.user
 
+# Compiled objects / libraries
 *.o
+*.obj
 *.a
+*.lib
 *.so
 *.so.*
 *.dll
+*.dll.a
 *.dylib
-*.exe
 *.out
+*.exe
 
+# Project binaries
 Gritador_Universe
 gritador_universe
 gritador
 
+# Packages
+*.zip
+*.7z
+*.tar
+*.tar.gz
+
+# Logs / temp
 *.log
 *.tmp
 *.bak
+*.orig
+*.rej
 *.swp
 *.swo
 *~
+
+# OS/editor
 .DS_Store
 Thumbs.db
+Desktop.ini
 
 .vscode/*
 !.vscode/settings.json
 !.vscode/tasks.json
 !.vscode/launch.json
+!.vscode/extensions.json
+
 .idea/
 .ccls-cache/
 .clangd/
 
+# Runtime/local data
 saves/
+save/
 userdata/
+user/
 config.local.*
 settings.local.*
+*.local
+*.save
+*.sav
+*.autosave
+
+# Keep root Makefile if used as wrapper
+!Makefile
