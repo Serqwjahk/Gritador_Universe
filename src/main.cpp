@@ -300,12 +300,62 @@ static void SpawnBody(std::vector<Body>& bodies,
     }
 }
 
+#if defined(__APPLE__)
+static void SyncImGuiMouseForMacOS()
+{
+    ImGuiIO& io = ImGui::GetIO();
+
+    Vector2 mouse = GetMousePosition();
+    Vector2 dpi   = GetWindowScaleDPI();
+
+    // En macOS/Retina, rlImGui/raylib pueden quedar desalineados según
+    // cómo se inicialice el framebuffer. Forzamos a ImGui a usar las
+    // coordenadas lógicas actuales de raylib para hit-testing.
+    io.DisplaySize = ImVec2((float)GetScreenWidth(), (float)GetScreenHeight());
+    io.DisplayFramebufferScale = ImVec2(dpi.x, dpi.y);
+
+    io.MousePos = ImVec2(mouse.x, mouse.y);
+
+    io.MouseDown[0] = IsMouseButtonDown(MOUSE_BUTTON_LEFT);
+    io.MouseDown[1] = IsMouseButtonDown(MOUSE_BUTTON_RIGHT);
+    io.MouseDown[2] = IsMouseButtonDown(MOUSE_BUTTON_MIDDLE);
+
+    io.MouseWheel = GetMouseWheelMove();
+}
+#endif
+
 // ============================================================
 //  MAIN
 // ============================================================
 int main() {
-    SetConfigFlags(FLAG_MSAA_4X_HINT | FLAG_WINDOW_RESIZABLE);
-    InitWindow(1440, 900, "Gritador Universe");
+    int windowWidth  = 1440;
+    int windowHeight = 900;
+
+#if defined(__APPLE__)
+    // Tamaño inicial seguro para macOS/Retina.
+    // Evita que la ventana arranque más grande que el área útil del monitor
+    // y quede en un estado pseudo-fullscreen hasta redimensionar manualmente.
+    windowWidth  = 1200;
+    windowHeight = 760;
+#endif
+
+    unsigned int windowFlags = FLAG_MSAA_4X_HINT | FLAG_WINDOW_RESIZABLE;
+
+#if defined(__APPLE__)
+    windowFlags |= FLAG_WINDOW_HIGHDPI;
+#endif
+
+    SetConfigFlags(windowFlags);
+    InitWindow(windowWidth, windowHeight, "Gritador Universe");
+
+#if defined(__APPLE__)
+    SetWindowMinSize(900, 560);
+
+    Vector2 dpiScale = GetWindowScaleDPI();
+    TraceLog(LOG_INFO, "macOS DPI scale: %.2f %.2f | screen: %d x %d",
+             dpiScale.x, dpiScale.y, GetScreenWidth(), GetScreenHeight());
+#endif
+
     SetTargetFPS(60);
 
     // ── GUI (Dear ImGui + rlImGui) ──
@@ -566,6 +616,11 @@ int main() {
 
         // UI (Dear ImGui / rlImGui)
         rlImGuiBegin();
+
+        #if defined(__APPLE__)
+        SyncImGuiMouseForMacOS();
+        #endif
+
         DrawTimeControlsHUD(guiState, input.paused);
         DrawStatusOverlay(bodies, CountActiveDust(dustField), input);
 
