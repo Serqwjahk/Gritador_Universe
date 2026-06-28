@@ -10,6 +10,7 @@
 #include "rocky_planets.h"
 #include "composition.h"
 #include "thread_pool.h"
+#include <algorithm>
 
 // ============================================================
 //  Motor de física: gravedad, colisiones, mareas, fragmentos
@@ -192,8 +193,10 @@ inline void SpawnPlanetaryRing(const Body& planet, std::vector<DustParticle>& du
         d.heatSpike = 0.0f;
         d.seed      = (float)FastRand01();
         d.active    = true;
-        d.isRing    = true; // anillo: sin muerte por fragAge (ver UpdateDustLifecycle)
-        d.hostBodyId = (int64_t)planet.id; // ver DrawDustField3D (renderer.h): sombra/luz por host
+        d.isRing = true;       // anillo: sin muerte por fragAge (ver UpdateDustLifecycle)
+        d.state = DustState::RingParticle;
+        d.stableOrbitTime = 3600.0 * 24.0;
+        d.hostBodyId = (int64_t)planet.id;
 
         double axisCosT = 2.0 * FastRand01() - 1.0;
         double axisSinT = std::sqrt(std::max(0.0, 1.0 - axisCosT*axisCosT));
@@ -557,7 +560,10 @@ static void MakeFragments(std::vector<Body>& bodies,
             d.heatSpike = fromTide ? tmpl.heatSpike : 1.0f;
             d.seed      = (float)FastRand01();
             d.active    = true;
-            d.isRing    = false; // polvo de colision: tiene vida util (ver UpdateDustLifecycle)
+            
+            d.isRing = false;      // polvo de colision: puede volverse orbita/anillo/acrecion
+            d.state = DustState::Debris;
+
 
             // Eje y velocidad de rotacion ("tumbling") aleatorios -- visual,
             // ver DustParticle::rotationAxis/rotationSpeed/currentRotation
@@ -1479,6 +1485,344 @@ static void ApplyTidesAndRoche(std::vector<Body>& bodies, std::vector<DustPartic
     if (!newBodies.empty()) bodies.insert(bodies.end(), newBodies.begin(), newBodies.end());
 }
 
+// ── Inteligencia de polvo: ligadura orbital, anillos y acrecion ─────────
+// El polvo sigue siendo visual/ligero, pero ahora puede:
+//  - detectar si esta ligado a un host;
+//  - asentarse gradualmente en el ecuador del host;
+//  - convertirse en RingParticle persistente;
+//  - agruparse en protocuerpos si esta fuera del limite de Roche.
+
+static double DustMassEstimate(const DustParticle& d) {
+    constexpr double DUST_DENSITY = 3000.0; // kg/m^3, roca/regolito promedio
+    return (4.0 / 3.0) * PI_D * d.radius * d.radius * d.radius * DUST_DENSITY;
+}
+
+static Vector3D DustHostSpinAxis(const Body& host) {
+    return NormalizeSafe(RotateAxialTilt(
+        {0.0, 1.0, 0.0},
+        (double)host.axialTilt * PI_D / 180.0
+    ));
+}
+
+static Vector3D RotateAroundAxis(const Vector3D& v, const Vector3D& axis, double angle)
+{
+    Vector3D a = NormalizeSafe(axis);
+    double c = std::cos(angle);
+    double s = std::sin(angle);
+
+    return v * c + Cross(a, v) * s + a * (a.dot(v) * (1.0 - c));
+}
+
+static const Body* FindBestDustHost(
+    const DustParticle& d,
+    const std::vector<Body>& bodies,
+    double* outEnergy = nullptr,
+    double* outR = nullptr,
+    double* outEcc = nullptr,
+    double* outInclCos = nullptr)
+{
+    const Body* best = nullptr;
+
+    double bestScore = 0.0;
+    double bestEnergy = 0.0;
+    double bestR = 0.0;
+    double bestEcc = 1.0;
+    double bestIncl = 0.0;
+
+    for (const Body& b : bodies) {
+        if (b.mass <= 0.0 || b.radius <= 0.0) continue;
+
+        Vector3D rel = d.pos - b.pos;
+        Vector3D rv  = d.vel - b.vel;
+
+        double r = std::max(1.0, rel.length());
+        double mu = G * b.mass;
+
+        // Energia orbital especifica.
+        // energy < 0 => orbita ligada al host.
+        double energy = 0.5 * rv.lengthSqr() - mu / r;
+        if (energy >= 0.0) continue;
+
+        Vector3D h = Cross(rel, rv);
+        double h2 = h.lengthSqr();
+
+        double ecc = 1.0;
+        if (h2 > 1e-12 && mu > 0.0) {
+            double e2 = std::max(0.0, 1.0 + (2.0 * energy * h2) / (mu * mu));
+            ecc = std::sqrt(e2);
+        }
+
+        Vector3D hN = NormalizeSafe(h);
+        double inclCos = std::abs(hN.dot(DustHostSpinAxis(b)));
+
+        // Preferimos el pozo que mas fuertemente liga a la particula.
+        double score = -energy;
+
+        if (!best || score > bestScore) {
+            best = &b;
+            bestScore = score;
+            bestEnergy = energy;
+            bestR = r;
+            bestEcc = ecc;
+            bestIncl = inclCos;
+        }
+    }
+
+    if (outEnergy)  *outEnergy = bestEnergy;
+    if (outR)       *outR = bestR;
+    if (outEcc)     *outEcc = bestEcc;
+    if (outInclCos) *outInclCos = bestIncl;
+
+    return best;
+}
+
+struct DustGridKey {
+    long long x, y, z;
+
+    bool operator==(const DustGridKey& o) const {
+        return x == o.x && y == o.y && z == o.z;
+    }
+};
+
+struct DustGridKeyHash {
+    size_t operator()(const DustGridKey& k) const {
+        uint64_t x = (uint64_t)k.x * 11400714819323198485ull;
+        uint64_t y = (uint64_t)k.y * 14029467366897019727ull;
+        uint64_t z = (uint64_t)k.z * 1609587929392839161ull;
+        return (size_t)(x ^ (y >> 1) ^ (z >> 2));
+    }
+};
+
+static void UpdateDustIntelligence(
+    std::vector<Body>& bodies,
+    std::vector<DustParticle>& dust,
+    double dt)
+{
+    constexpr double RING_STABLE_PROMOTE_TIME = 3600.0 * 12.0;
+    constexpr double RING_CANDIDATE_TIME      = 1800.0;
+
+    constexpr double MAX_RING_RADIUS_MULT = 120.0;
+    constexpr double RING_ECC_MAX         = 0.22;
+    constexpr double RING_INCL_COS_MIN    = 0.88;
+
+    constexpr double PLANE_SPRING = 2.5e-5;
+    constexpr double PLANE_DAMP   = 8.0e-3;
+    constexpr double RADIAL_DAMP  = 4.0e-3;
+
+    // 1) Clasificacion orbital + asentamiento ecuatorial.
+
+    for (DustParticle& d : dust) {
+        if (!d.active) continue;
+
+        if (d.isRing || d.state == DustState::RingParticle) {
+            d.state = DustState::RingParticle;
+            continue;
+        }
+
+        double energy = 0.0;
+        double r = 0.0;
+        double ecc = 1.0;
+        double inclCos = 0.0;
+
+
+        const Body* host = FindBestDustHost(d, bodies, &energy, &r, &ecc, &inclCos);
+
+        if (!host) {
+            d.state = DustState::Decaying;
+            d.stableOrbitTime = 0.0;
+            if (!d.isRing) d.hostBodyId = -1;
+            continue;
+        }
+
+        d.hostBodyId = (int64_t)host->id;
+        d.state = DustState::BoundOrbit;
+        d.usefulAge += dt;
+
+        if (!host->isStar && host->mass > 0.0 && host->radius > 0.0) {
+            Vector3D rel = d.pos - host->pos;
+            Vector3D rv  = d.vel - host->vel;
+
+            Vector3D radial = NormalizeSafe(rel);
+            Vector3D up = DustHostSpinAxis(*host);
+
+            double verticalPos = rel.dot(up);
+            double verticalVel = rv.dot(up);
+
+            double roche = 2.44 * host->radius *
+                std::cbrt(std::max(1e-9, DensityOf(host->mass, host->radius) / 3000.0));
+
+            bool inRingZone =
+                r > host->radius * 1.15 &&
+                r < host->radius * MAX_RING_RADIUS_MULT;
+
+            bool stableOrbit =
+                inRingZone &&
+                ecc < RING_ECC_MAX &&
+                inclCos > RING_INCL_COS_MIN;
+
+            if (stableOrbit) {
+                d.stableOrbitTime += dt;
+
+                d.state = (d.stableOrbitTime >= RING_CANDIDATE_TIME)
+                    ? DustState::RingCandidate
+                    : DustState::BoundOrbit;
+
+                // Asentamiento suave al ecuador:
+                // No teletransporta; amortigua velocidad vertical, posicion vertical
+                // y excentricidad radial.
+                d.vel -= up * (verticalVel * ClampD(PLANE_DAMP * dt, 0.0, 0.35));
+                d.vel -= up * (verticalPos * ClampD(PLANE_SPRING * dt, 0.0, 0.20));
+
+                double radialVel = rv.dot(radial);
+                d.vel -= radial * (radialVel * ClampD(RADIAL_DAMP * dt, 0.0, 0.20));
+
+                if (d.stableOrbitTime >= RING_STABLE_PROMOTE_TIME || r < roche * 1.20) {
+                    d.state = DustState::RingParticle;
+                    d.isRing = true;
+                    d.heatSpike = std::max(0.0f, d.heatSpike - 0.02f);
+                }
+            } else {
+                d.stableOrbitTime = std::max(0.0, d.stableOrbitTime - dt * 0.5);
+                if (!d.isRing) d.state = DustState::BoundOrbit;
+            }
+        }
+    }
+
+    // 2) Acrecion ligera por grid.
+    // Solo polvo util no estabilizado como anillo.
+    constexpr double CELL_SIZE = 2.0e7;       // 20 000 km
+    constexpr int    MIN_CLUSTER_COUNT = 10;
+    constexpr double MIN_PROTO_MASS = 5.0e16;
+    constexpr double MAX_DISPERSION_FRAC = 0.75;
+
+    std::unordered_map<DustGridKey, std::vector<int>, DustGridKeyHash> grid;
+    grid.reserve(dust.size());
+
+    for (int i = 0; i < (int)dust.size(); ++i) {
+        DustParticle& d = dust[i];
+
+        if (!d.active) continue;
+        if (d.isRing) continue;
+        if (d.state == DustState::RingParticle) continue;
+        if (d.state == DustState::Decaying) continue;
+
+        DustGridKey key {
+            (long long)std::floor(d.pos.x / CELL_SIZE),
+            (long long)std::floor(d.pos.y / CELL_SIZE),
+            (long long)std::floor(d.pos.z / CELL_SIZE)
+        };
+
+        grid[key].push_back(i);
+    }
+
+    for (auto& kv : grid) {
+        std::vector<int>& ids = kv.second;
+        if ((int)ids.size() < MIN_CLUSTER_COUNT) continue;
+
+        double mSum = 0.0;
+        Vector3D cm{0, 0, 0};
+        Vector3D cv{0, 0, 0};
+
+        int rSum = 0;
+        int gSum = 0;
+        int bSum = 0;
+
+        for (int idx : ids) {
+            const DustParticle& d = dust[idx];
+
+            double m = DustMassEstimate(d);
+            mSum += m;
+            cm += d.pos * m;
+            cv += d.vel * m;
+
+            rSum += d.color.r;
+            gSum += d.color.g;
+            bSum += d.color.b;
+        }
+
+        if (mSum < MIN_PROTO_MASS) continue;
+
+        cm = cm / mSum;
+        cv = cv / mSum;
+
+        double rProto = std::cbrt((3.0 * mSum) / (4.0 * PI_D * 3000.0));
+
+        double vDisp2 = 0.0;
+        for (int idx : ids) {
+            vDisp2 += (dust[idx].vel - cv).lengthSqr();
+        }
+
+        double vDisp = std::sqrt(vDisp2 / std::max(1, (int)ids.size()));
+        double vEsc = std::sqrt(2.0 * G * mSum / std::max(1.0, rProto));
+
+        if (vDisp > vEsc * MAX_DISPERSION_FRAC) {
+            for (int idx : ids) dust[idx].state = DustState::Accreting;
+            continue;
+        }
+
+        // No acrecionar dentro del limite de Roche: ahi toca anillo/disco.
+        DustParticle probe = dust[ids.front()];
+        probe.pos = cm;
+        probe.vel = cv;
+
+        double e = 0.0;
+        double rr = 0.0;
+        double ec = 1.0;
+        double ic = 0.0;
+
+        const Body* host = FindBestDustHost(probe, bodies, &e, &rr, &ec, &ic);
+
+        if (host && !host->isStar) {
+            double roche = 2.44 * host->radius *
+                std::cbrt(std::max(1e-9, DensityOf(host->mass, host->radius) / 3000.0));
+
+            if ((cm - host->pos).length() < roche) {
+                for (int idx : ids) {
+                    dust[idx].state = DustState::RingCandidate;
+                    dust[idx].isRing = true;
+                }
+                continue;
+            }
+        }
+
+        Body p;
+        p.name = (mSum > 1.0e20) ? "Proto-Cuerpo" : "Fragmento acrecido";
+        p.pos = cm;
+        p.prevPos = cm;
+        p.vel = cv;
+        p.mass = mSum;
+        p.radius = rProto;
+
+        int n = std::max(1, (int)ids.size());
+
+        p.color = {
+            (unsigned char)ClampD(rSum / n, 0, 255),
+            (unsigned char)ClampD(gSum / n, 0, 255),
+            (unsigned char)ClampD(bSum / n, 0, 255),
+            255
+        };
+
+        p.isFragment = (mSum <= 1.0e20);
+        p.isRockyPlanet = true;
+        p.material = MAT_ROCKY;
+        p.rockyPlanet = MakeAsteroidProfile(
+            (unsigned int)(FastRand01() * 4294967295.0),
+            MAT_ROCKY
+        );
+
+        p.temperature = 280.0;
+        p.heatSpike = 0.25f;
+        p.spawnGraceFrames = SPAWN_GRACE_FRAMES;
+
+        bodies.push_back(p);
+
+        for (int idx : ids) {
+            dust[idx].state = DustState::ProtoBodySeed;
+            dust[idx].active = false;
+        }
+    }
+}
+
 // ── Actualización del campo de polvo (sistema visual ligero) ───────
 // El polvo NO participa en la gravedad N-cuerpo completa ni en las
 // colisiones: es una capa puramente visual con una orbita simplificada
@@ -1524,9 +1868,53 @@ static void UpdateDustGravity(std::vector<DustParticle>& dust,
     }
 
     DustParticle* data = dust.data();
-    GetThreadPool().ParallelFor((int)dust.size(), [data, &sources, sourceCount, h](int i) {
+    GetThreadPool().ParallelFor((int)dust.size(), [data, &sources, sourceCount, &bodies, h](int i) {
         DustParticle& d = data[i];
         if (!d.active) return; // slot libre del pool: nada que actualizar
+
+        if (d.isRing && d.hostBodyId >= 0) {
+            const Body* host = nullptr;
+
+            for (const Body& b : bodies) {
+                if ((int64_t)b.id == d.hostBodyId && b.mass > 0.0) {
+                    host = &b;
+                    break;
+                }
+            }
+
+            if (host && host->mass > 0.0 && host->radius > 0.0) {
+                Vector3D rel = d.pos - host->pos;
+                double r = std::max(1.0, rel.length());
+
+                if (r <= host->radius * 1.05) {
+                    d.active = false;
+                    return;
+                }
+
+                Vector3D axis = DustHostSpinAxis(*host);
+
+                Vector3D rv = d.vel - host->vel;
+                double sign = (Cross(rel, rv).dot(axis) < 0.0) ? -1.0 : 1.0;
+
+                double omega = std::sqrt(G * host->mass / std::max(1.0, r * r * r));
+                Vector3D newRel = RotateAroundAxis(rel, axis, sign * omega * h);
+
+                Vector3D radial = NormalizeSafe(newRel);
+                Vector3D tangent = NormalizeSafe(Cross(axis, radial)) * sign;
+
+                double vCirc = std::sqrt(G * host->mass / r);
+
+                d.pos = host->pos + newRel;
+                d.vel = host->vel + tangent * vCirc;
+
+                d.currentRotation = std::fmod(
+                    d.currentRotation + d.rotationSpeed * (float)h,
+                    2.0f * (float)PI_D
+                );
+
+                return;
+            }
+        }
 
         // Restricted N-Body: la particula SIENTE la gravedad de los cuerpos
         // rigidos (sources), pero no suma gravedad entre particulas ni
@@ -1570,17 +1958,39 @@ static void UpdateDustGravity(std::vector<DustParticle>& dust,
 static void UpdateDustLifecycle(std::vector<DustParticle>& dust, double dt)
 {
     for (DustParticle& d : dust) {
-        if (!d.active) continue; // slot libre del pool: nada que actualizar
-        d.fragAge += dt;
-        if (d.heatSpike > 0.0f) d.heatSpike = std::max(0.0f, d.heatSpike - 0.008f);
+        if (!d.active) continue;
 
-        // Polvo de COLISION (isRing=false) tiene vida util: el slot vuelve
-        // al pool (active=false) al superar DUST_MAX_LIFE. Polvo de ANILLO
-        // (isRing=true) tiene vida indefinida -- nunca se desactiva aqui
-        // (ver DustParticle::isRing, body.h).
-        if (!d.isRing && d.fragAge > DUST_MAX_LIFE) d.active = false;
+        d.fragAge += dt;
+
+        // El polvo util se enfria mas rapido para evitar el look falso
+        // de bolitas naranjas eternas.
+        float cool =
+            (d.state == DustState::RingParticle ||
+             d.state == DustState::RingCandidate ||
+             d.state == DustState::Accreting)
+            ? 0.020f
+            : 0.010f;
+
+        if (d.heatSpike > 0.0f) {
+            d.heatSpike = std::max(0.0f, d.heatSpike - cool);
+        }
+
+        const bool useful =
+            d.isRing ||
+            d.state == DustState::RingParticle ||
+            d.state == DustState::RingCandidate ||
+            d.state == DustState::Accreting ||
+            d.state == DustState::ProtoBodySeed ||
+            d.state == DustState::BoundOrbit;
+
+        // Solo muere basura real.
+        // Si esta ligado, formando anillo o acreciendo, NO desaparece por TTL.
+        if (!useful && d.fragAge > DUST_MAX_LIFE) {
+            d.active = false;
+        }
     }
 }
+
 
 // ── Termodinámica: relajación de temperatura + transiciones de fase ──
 // 'temperature' ya no se recalcula desde cero cada frame: es un estado
@@ -1658,7 +2068,41 @@ static void UpdateThermodynamics(std::vector<Body>& bodies, double dt)
             b.iceFraction    = ClampF(b.iceFraction,   0.0f, b.volatileBudget);
             b.vaporFraction  = ClampF(b.vaporFraction, 0.0f, b.volatileBudget - b.iceFraction);
 
-            b.rockyPlanet.waterLevel = b.volatileBudget - b.iceFraction - b.vaporFraction;
+            float liquidFraction = ClampF(
+                b.volatileBudget - b.iceFraction - b.vaporFraction,
+                0.0f,
+                b.volatileBudget
+            );
+
+            float surfaceIceFraction = ClampF(
+                b.iceFraction,
+                0.0f,
+                b.volatileBudget
+            );
+
+            // Nivel hidrográfico visible: líquido + hielo superficial.
+            // Así un océano congelado NO desaparece visualmente.
+            float visibleHydroLevel = ClampF(
+                liquidFraction + surfaceIceFraction,
+                0.0f,
+                1.0f
+            );
+
+            b.rockyPlanet.waterLevel = visibleHydroLevel;
+
+            // Si predomina hielo, el "agua" visual se vuelve blanca/azulada.
+            float iceVisual = (visibleHydroLevel > 1.0e-5f)
+                ? ClampF(surfaceIceFraction / visibleHydroLevel, 0.0f, 1.0f)
+                : 0.0f;
+
+            const Vector3 ICE_OCEAN_COLOR = {0.78f, 0.88f, 0.95f};
+
+            b.rockyPlanet.colorWater.x =
+                b.baseColorWater.x + (ICE_OCEAN_COLOR.x - b.baseColorWater.x) * iceVisual;
+            b.rockyPlanet.colorWater.y =
+                b.baseColorWater.y + (ICE_OCEAN_COLOR.y - b.baseColorWater.y) * iceVisual;
+            b.rockyPlanet.colorWater.z =
+                b.baseColorWater.z + (ICE_OCEAN_COLOR.z - b.baseColorWater.z) * iceVisual;
 
             // Atmosfera: el vapor la engrosa por encima de su base; el
             // calor extremo (mas alla de la temperatura de escape de
@@ -1691,23 +2135,31 @@ static void UpdateThermodynamics(std::vector<Body>& bodies, double dt)
             // y disipa la atmosfera/cobertura nubosa por completo.
             if (jeansEscape) {
                 double lossRate = ClampD((Tn - blowoffTemp) / blowoffTemp, 0.0, 1.0) * 0.05;
-                float  loss     = (float)(lossRate * dt / (3600.0 * 24.0));
+                float requestedLoss = (float)(lossRate * dt / (3600.0 * 24.0));
 
-                // Composicion: la misma fraccion de volatiles que se pierde
-                // del presupuesto de superficie (volatileBudget) se pierde
-                // tambien del inventario de composicion (Agua_Liquida/
-                // Agua_Hielo/Vapor_de_Agua, ver composition.h) -- es escape
-                // de Jeans real (las moleculas se van al espacio), no solo
-                // un cambio visual de oceanos/nubes.
-                if (b.volatileBudget > 1.0e-6f) {
+                // El espacio sólo se lleva vapor disponible.
+                // El hielo/líquido debe convertirse primero a vapor por la lógica de fases.
+                float loss = std::min(requestedLoss, b.vaporFraction);
+
+                if (loss > 0.0f && b.volatileBudget > 1.0e-6f) {
                     float lostFrac = ClampF(loss / b.volatileBudget, 0.0f, 1.0f);
                     RemoveVolatileFraction(b.solid_composition, lostFrac);
                     RemoveVolatileFraction(b.atmospheric_composition, lostFrac);
                 }
 
+                b.vaporFraction = std::max(0.0f, b.vaporFraction - loss);
+                b.volatileBudget = std::max(0.0f, b.volatileBudget - loss);
+
+                b.iceFraction = ClampF(b.iceFraction, 0.0f, b.volatileBudget);
+                b.vaporFraction = ClampF(
+                    b.vaporFraction,
+                    0.0f,
+                    std::max(0.0f, b.volatileBudget - b.iceFraction)
+                );
+
                 b.baseAtmosphereDensity = std::max(0.0f, b.baseAtmosphereDensity - loss);
-                b.volatileBudget        = std::max(0.0f, b.volatileBudget        - loss);
-                targetAtm   = 0.0f;
+
+                targetAtm = 0.0f;
                 targetCloud = 0.0f;
             }
             b.atmosphereDensity += (targetAtm - b.atmosphereDensity) * relax;
@@ -1721,9 +2173,17 @@ static void UpdateThermodynamics(std::vector<Body>& bodies, double dt)
             // tono base configurado, ver baseColorWater/baseAtmosphereColor).
             const Vector3 GREENHOUSE_WATER_TINT = {0.55f, 0.50f, 0.35f};
             const Color   GREENHOUSE_ATM_TINT   = {200, 185, 140, 0};
-            b.rockyPlanet.colorWater.x = b.baseColorWater.x + (GREENHOUSE_WATER_TINT.x - b.baseColorWater.x) * greenhouseFrac;
-            b.rockyPlanet.colorWater.y = b.baseColorWater.y + (GREENHOUSE_WATER_TINT.y - b.baseColorWater.y) * greenhouseFrac;
-            b.rockyPlanet.colorWater.z = b.baseColorWater.z + (GREENHOUSE_WATER_TINT.z - b.baseColorWater.z) * greenhouseFrac;
+            Vector3 hydroColor = b.baseColorWater;
+
+            hydroColor.x = hydroColor.x + (ICE_OCEAN_COLOR.x - hydroColor.x) * iceVisual;
+            hydroColor.y = hydroColor.y + (ICE_OCEAN_COLOR.y - hydroColor.y) * iceVisual;
+            hydroColor.z = hydroColor.z + (ICE_OCEAN_COLOR.z - hydroColor.z) * iceVisual;
+
+            hydroColor.x = hydroColor.x + (GREENHOUSE_WATER_TINT.x - hydroColor.x) * greenhouseFrac;
+            hydroColor.y = hydroColor.y + (GREENHOUSE_WATER_TINT.y - hydroColor.y) * greenhouseFrac;
+            hydroColor.z = hydroColor.z + (GREENHOUSE_WATER_TINT.z - hydroColor.z) * greenhouseFrac;
+
+            b.rockyPlanet.colorWater = hydroColor;
             b.atmosphereColor.r = (unsigned char)((float)b.baseAtmosphereColor.r + ((float)GREENHOUSE_ATM_TINT.r - (float)b.baseAtmosphereColor.r) * greenhouseFrac);
             b.atmosphereColor.g = (unsigned char)((float)b.baseAtmosphereColor.g + ((float)GREENHOUSE_ATM_TINT.g - (float)b.baseAtmosphereColor.g) * greenhouseFrac);
             b.atmosphereColor.b = (unsigned char)((float)b.baseAtmosphereColor.b + ((float)GREENHOUSE_ATM_TINT.b - (float)b.baseAtmosphereColor.b) * greenhouseFrac);
@@ -1792,8 +2252,11 @@ static void StepPhysics(std::vector<Body>& bodies, std::vector<DustParticle>& du
     }
     ApplyTidesAndRoche(bodies, dust, dt);
     ResolveCollisions(bodies, dust, dt);
+
     UpdateThermodynamics(bodies, dt);
+    UpdateDustIntelligence(bodies, dust, dt);
     UpdateDustLifecycle(dust, dt);
+
 
     // Cálculo del centroide y radio del sistema
     Vector3D sysCentroid{0, 0, 0};

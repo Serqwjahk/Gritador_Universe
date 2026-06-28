@@ -381,10 +381,22 @@ int main() {
 
     // ── Shader de llamaradas solares (ribbon arch, tutorial Blender) ──
     Shader flareShader = LoadShaderFromMemory(FLARE_VERT_SRC, FLARE_FRAG_SRC);
+    flareShader.locs[SHADER_LOC_VERTEX_POSITION]   = GetShaderLocationAttrib(flareShader, "vertexPosition");
+    flareShader.locs[SHADER_LOC_VERTEX_TEXCOORD01] = GetShaderLocationAttrib(flareShader, "vertexTexCoord");
+    flareShader.locs[SHADER_LOC_MATRIX_MVP]        = GetShaderLocation(flareShader, "mvp");
     FlareShaderLocs fLocs = GetFlareShaderLocs(flareShader);
+
     Mesh archMesh = GenMeshArchRibbon(0.85f, 0.55f, 0.35f, 16);
     Model archModel = LoadModelFromMesh(archMesh);
     archModel.materials[0].shader = flareShader;
+
+    Mesh jetMesh = GenMeshRadialJet();
+    Model jetModel = LoadModelFromMesh(jetMesh);
+    jetModel.materials[0].shader = flareShader;
+
+    Mesh puffMesh = GenMeshFlarePuff();
+    Model puffModel = LoadModelFromMesh(puffMesh);
+    puffModel.materials[0].shader = flareShader;
 
     // ── Escombros 3D instanciados (campo de polvo/anillos) ──
     Shader rockShader = LoadShaderFromMemory(ROCK_INSTANCE_VERT_SRC, ROCK_INSTANCE_FRAG_SRC);
@@ -601,7 +613,7 @@ int main() {
         // Llamaradas solares: ribbon arches aditivos sobre la estrella
         for (int i = 0; i < (int)bodies.size(); ++i)
             if (bodies[i].isStar)
-                DrawStarFlares(bodies[i], flareShader, fLocs, archModel, 12);
+                DrawStarFlares(bodies[i], flareShader, fLocs, archModel, jetModel, puffModel, 12);
 
         // Campo de escombros 3D: rocas low-poly instanciadas (un draw call)
         DrawDustField3D(dustField, bodies, rockMesh, rockMaterial, rkLocs, orbitCam.cam);
@@ -644,6 +656,8 @@ int main() {
 
     // ── Limpieza ──
     UnloadModel(archModel);
+    UnloadModel(jetModel);
+    UnloadModel(puffModel);
     UnloadShader(flareShader);
     UnloadMaterial(rockMaterial);
     UnloadMesh(rockMesh);

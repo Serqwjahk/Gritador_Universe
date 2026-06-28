@@ -166,11 +166,30 @@ inline Mesh BuildLowPolyRockMesh(unsigned int seed = 1337u) {
 
     int vi = 0;
     for (const auto& f : subFaces) {
+        Vector3 v0 = verts[f[0]];
+        Vector3 v1 = verts[f[1]];
+        Vector3 v2 = verts[f[2]];
+
+        Vector3 faceN = Vector3Normalize(
+            Vector3CrossProduct(
+                Vector3Subtract(v1, v0),
+                Vector3Subtract(v2, v0)
+            )
+        );
+
         for (int k = 0; k < 3; ++k, ++vi) {
             int idx = f[k];
-            m.vertices [vi*3+0] = verts[idx].x;   m.vertices [vi*3+1] = verts[idx].y;   m.vertices [vi*3+2] = verts[idx].z;
-            m.normals  [vi*3+0] = normals[idx].x; m.normals  [vi*3+1] = normals[idx].y; m.normals  [vi*3+2] = normals[idx].z;
-            m.texcoords[vi*2+0] = 0.0f;           m.texcoords[vi*2+1] = 0.0f;
+
+            m.vertices[vi*3+0] = verts[idx].x;
+            m.vertices[vi*3+1] = verts[idx].y;
+            m.vertices[vi*3+2] = verts[idx].z;
+
+            m.normals[vi*3+0] = faceN.x;
+            m.normals[vi*3+1] = faceN.y;
+            m.normals[vi*3+2] = faceN.z;
+
+            m.texcoords[vi*2+0] = 0.0f;
+            m.texcoords[vi*2+1] = 0.0f;
         }
     }
     UploadMesh(&m, false);
@@ -249,7 +268,7 @@ struct ShaderLocs {
     int ggIceGiant;
     // Planetas rocosos/helados (shader procedural drawRockyPlanet)
     int isRockyPlanet;
-    int rpWaterLevel, rpCraterDensity, rpCloudDensity, rpCloudBandStrength, rpHasCityLights, rpSeed;
+    int rpWaterLevel, rpOceanIce, rpCraterDensity, rpCloudDensity, rpCloudBandStrength, rpHasCityLights, rpSeed;
     int rpColorLow, rpColorHigh, rpColorMid, rpColorWater, rpCloudColor;
     int rpHasSurfaceTex, rpNormalMap, rpSpecularMap, rpColorMap, rpPolarIceSize, rpSurfaceSpin;
     // Inclinacion axial (ver axialTilt en Body, uAxialTilt y undoAxialTilt
@@ -325,6 +344,7 @@ inline ShaderLocs GetShaderLocs(Shader& shader) {
     // Planetas rocosos/helados
     locs.isRockyPlanet    = GetShaderLocation(shader, "isRockyPlanet");
     locs.rpWaterLevel     = GetShaderLocation(shader, "uWaterLevel");
+    locs.rpOceanIce       = GetShaderLocation(shader, "uOceanIce");
     locs.rpCraterDensity  = GetShaderLocation(shader, "uCraterDensity");
     locs.rpCloudDensity   = GetShaderLocation(shader, "uCloudDensity");
     locs.rpCloudBandStrength = GetShaderLocation(shader, "uCloudBandStrength");
@@ -472,6 +492,39 @@ inline void UploadLightUniforms(Shader& shader, const ShaderLocs& locs,
 
     std::vector<LightSrc> lights = stars;
 
+    auto AddFakeLight = [&]() {
+        if (!g_fakeLightEnabled || (int)lights.size() >= MAX_LIGHTS) return;
+
+        LightSrc fakeLight{};
+
+        const Vector3 FAKE_LIGHT_DIR = Vector3Normalize({ -0.45f, 0.0f, 0.82f });
+
+        constexpr float FAKE_LIGHT_DIST_DRAW = 10000.0f;
+        constexpr double FAKE_LIGHT_REL_IRRADIANCE = 1;
+
+        Vector3 fakeDrawPos = Vector3Scale(FAKE_LIGHT_DIR, FAKE_LIGHT_DIST_DRAW);
+        double fakeDistMeters = std::max(1.0, (double)FAKE_LIGHT_DIST_DRAW / RENDER_SCALE);
+
+        fakeLight.pos = ToPhysPos(fakeDrawPos);
+        fakeLight.lum = FAKE_LIGHT_REL_IRRADIANCE * 1361.0 * 4.0 * PI_D * fakeDistMeters * fakeDistMeters;
+
+        // Si quieres eclipses más duros/visibles, baja este valor.
+        // Solar realista:
+        fakeLight.radius = fakeDistMeters * 0.00465;
+
+        fakeLight.temperature = 5778.0;
+        fakeLight.fake = false;
+
+        lights.push_back(fakeLight);
+    };
+
+    // Si NO hay estrella real, la fake light debe ser lightPos[0].
+    // Eso alimenta correctamente todos los paths del shader que usan lightPos[0].
+    if (lights.empty()) {
+        AddFakeLight();
+    }
+
+    // Cuerpos calientes van después de la estrella real o de la fake light principal.
     if ((int)lights.size() < MAX_LIGHTS) {
         for (const LightSrc& h : hotBodies) {
             if ((int)lights.size() >= MAX_LIGHTS) break;
@@ -479,65 +532,9 @@ inline void UploadLightUniforms(Shader& shader, const ShaderLocs& locs,
         }
     }
 
-    if (g_fakeLightEnabled && (int)lights.size() < MAX_LIGHTS) {
-        LightSrc fakeLight{};
-
-        // Luz falsa tipo "estrella de relleno", NO linterna de cámara.
-        //
-        // Antes estaba en camera.position con 0.005 L_SUN y radio 0:
-        // eso la convertía en una fuente cercana/puntual. Resultado:
-        // hotspots, iluminación dependiente de la cámara y aspecto artificial.
-        //
-        // Ahora se coloca muy lejos en una dirección global fija,
-        // con luminosidad calibrada para producir una irradiancia media
-        // parecida a Sol-a-1UA en el rango visual del shader.
-        // Dirección FIJA de la estrella falsa en espacio de render.
-        // No depende de la cámara. Cambia estos valores si quieres que la luz venga
-        // desde otro ángulo global del universo.
-        //
-        // Convención: este vector apunta DESDE los cuerpos HACIA la fuente de luz.
-        const Vector3 FAKE_LIGHT_DIR = Vector3Normalize({ -0.45f, 0.35f, 0.82f });
-
-        // Distancia en unidades de render. Grande = rayos casi paralelos.
-        // Al calibrar la luminosidad con esta misma distancia, aumentar este valor
-        // NO reduce la intensidad media: solo hace la luz más direccional/paralela.
-        constexpr float FAKE_LIGHT_DIST_DRAW = 10000.0f;
-
-        // Intensidad visual deseada en unidades de "Sol en Tierra ~= 1".
-        // 1.0 = luz solar media; 2.0-3.0 = relleno más claro.
-        constexpr double FAKE_LIGHT_REL_IRRADIANCE = 1.8;
-
-        // Posición fija relativa al origen de render actual.
-        // ToPhysPos() la convierte a coordenadas físicas alrededor de g_renderOrigin,
-        // y luego ToDrawPos() volverá a dejarla en esta misma posición de render.
-        // Resultado: dirección global estable, no pegada a la cámara.
-        Vector3 fakeDrawPos = Vector3Scale(FAKE_LIGHT_DIR, FAKE_LIGHT_DIST_DRAW);
-
-        double fakeDistMeters = std::max(1.0, (double)FAKE_LIGHT_DIST_DRAW / RENDER_SCALE);
-
-        // physicalLightAttenuation() hace:
-        // irradiance = lum / (4*pi*d^2)
-        // relative = irradiance / 1361
-        //
-        // Por tanto invertimos esa fórmula para que, a FAKE_LIGHT_DIST_DRAW,
-        // la luz falsa entregue FAKE_LIGHT_REL_IRRADIANCE.
-        fakeLight.pos = ToPhysPos(fakeDrawPos);
-        fakeLight.lum = FAKE_LIGHT_REL_IRRADIANCE * 1361.0 * 4.0 * PI_D * fakeDistMeters * fakeDistMeters;
-
-        // Radio angular parecido al Sol visto desde la Tierra:
-        // R_sun / 1UA ~= 0.00465 rad.
-        // Esto permite que lightVisibilityFromPoint() la trate como disco
-        // luminoso no degenerado, con eclipses/penumbras más naturales.
-        fakeLight.radius = fakeDistMeters * 0.00465;
-
-        // Color solar realista.
-        fakeLight.temperature = 5778.0;
-
-        // false para que use KelvinToRGBVec(5778K), igual que una estrella real,
-        // en vez de blanco puro artificial.
-        fakeLight.fake = false;
-
-        lights.push_back(fakeLight);
+    // Si sí hay estrella real, la fake light se añade al final como relleno visual.
+    if (!stars.empty()) {
+        AddFakeLight();
     }
 
     Vector3 posArr[MAX_LIGHTS]{};
@@ -695,6 +692,11 @@ inline void UploadBodyUniforms(Shader& shader, const ShaderLocs& locs, const Bod
     SetShaderValue(shader, locs.temp,      &tempVal,   SHADER_UNIFORM_FLOAT);
     SetShaderValue(shader, locs.heatSpike, &spikeVal,  SHADER_UNIFORM_FLOAT);
     SetShaderValue(shader, locs.spinPhase, &spinVal,   SHADER_UNIFORM_FLOAT);
+    // Rotación visual REAL del cuerpo, en radianes.
+    // La usan planetas y ahora también estrellas para que el patrón
+    // procedural quede pegado al giro físico del Body.
+    float surfaceSpinRad = fmodf(b.rotationAngle, 360.0f) * DEG2RAD;
+    SetShaderValue(shader, locs.rpSurfaceSpin, &surfaceSpinRad, SHADER_UNIFORM_FLOAT);
     SetShaderValue(shader, locs.atmosDens, &atmosDens, SHADER_UNIFORM_FLOAT);
     SetShaderValue(shader, locs.atmosColor, atmosCol,  SHADER_UNIFORM_VEC3);
     SetShaderValue(shader, locs.atmosFalloff, &atmosFalloff, SHADER_UNIFORM_FLOAT);
@@ -754,10 +756,30 @@ inline void UploadBodyUniforms(Shader& shader, const ShaderLocs& locs, const Bod
 
     if (b.isRockyPlanet) {
         const RockyPlanetProfile& r = b.rockyPlanet;
+
         SetShaderValue(shader, locs.rpWaterLevel,    &r.waterLevel,    SHADER_UNIFORM_FLOAT);
+        float liquid = ClampF(
+            b.volatileBudget - b.iceFraction - b.vaporFraction,
+            0.0f,
+            b.volatileBudget
+        );
+
+        float visibleHydro = ClampF(
+            liquid + b.iceFraction,
+            0.0f,
+            1.0f
+        );
+
+        float oceanIce = (visibleHydro > 1.0e-5f)
+            ? ClampF(b.iceFraction / visibleHydro, 0.0f, 1.0f)
+            : 0.0f;
+
+        SetShaderValue(shader, locs.rpOceanIce, &oceanIce, SHADER_UNIFORM_FLOAT);
         SetShaderValue(shader, locs.rpCraterDensity, &r.craterDensity, SHADER_UNIFORM_FLOAT);
+
         float cloudDensVal = b.hideClouds ? 0.0f : r.cloudDensity;
-        SetShaderValue(shader, locs.rpCloudDensity,  &cloudDensVal,    SHADER_UNIFORM_FLOAT);
+        SetShaderValue(shader, locs.rpCloudDensity, &cloudDensVal, SHADER_UNIFORM_FLOAT);
+
         SetShaderValue(shader, locs.rpCloudBandStrength, &r.cloudBandStrength, SHADER_UNIFORM_FLOAT);
         SetShaderValue(shader, locs.rpHasCityLights, &r.hasCityLights, SHADER_UNIFORM_FLOAT);
         SetShaderValue(shader, locs.rpSeed,          &r.seed,          SHADER_UNIFORM_FLOAT);
@@ -765,39 +787,26 @@ inline void UploadBodyUniforms(Shader& shader, const ShaderLocs& locs, const Bod
         SetShaderValue(shader, locs.rpMountainStrength, &r.mountainStrength, SHADER_UNIFORM_FLOAT);
         SetShaderValue(shader, locs.rpTerrainScale,     &r.terrainScale,     SHADER_UNIFORM_FLOAT);
 
-        // Angulo de rotacion actual del modelo (b.rotationAngle, en
-        // grados) reducido a [0, 2*PI) en radianes: permite "despegar"
-        // el normal/posicion en espacio de mundo (pos3D, invariante
-        // ante la rotacion de una esfera) y recuperar la coordenada
-        // solidaria con la malla, para que el terreno/UVs roten con
-        // el planeta.
-        float surfaceSpinRad = fmodf(b.rotationAngle, 360.0f) * DEG2RAD;
-        SetShaderValue(shader, locs.rpSurfaceSpin, &surfaceSpinRad, SHADER_UNIFORM_FLOAT);
-
         float colLow[3]   = { r.colorLow.x,   r.colorLow.y,   r.colorLow.z   };
         float colHigh[3]  = { r.colorHigh.x,  r.colorHigh.y,  r.colorHigh.z  };
         float colMid[3]   = { r.colorMid.x,   r.colorMid.y,   r.colorMid.z   };
         float colWater[3] = { r.colorWater.x, r.colorWater.y, r.colorWater.z };
         float colCloud[3] = { r.cloudColor.x, r.cloudColor.y, r.cloudColor.z };
+
         SetShaderValue(shader, locs.rpColorLow,   colLow,   SHADER_UNIFORM_VEC3);
         SetShaderValue(shader, locs.rpColorHigh,  colHigh,  SHADER_UNIFORM_VEC3);
         SetShaderValue(shader, locs.rpColorMid,   colMid,   SHADER_UNIFORM_VEC3);
         SetShaderValue(shader, locs.rpColorWater, colWater, SHADER_UNIFORM_VEC3);
         SetShaderValue(shader, locs.rpCloudColor, colCloud, SHADER_UNIFORM_VEC3);
+
         SetShaderValue(shader, locs.rpTerrainBiome, &r.terrainBiome, SHADER_UNIFORM_FLOAT);
 
-        // Texturas reales de relieve/biomas/albedo (solo Tierra).
-        // NOTA: SetShaderValueTexture() por si sola NO basta para shaders
-        // de modelos 3D: rlSetUniformSampler() solo registra el sampler
-        // para el batch 2D (rlDrawRenderBatchActive), que DrawMesh() no
-        // usa. Ademas, DrawBody() deja material.maps[NORMAL/SPECULAR/
-        // ROUGHNESS] (unidades 1, 2 y 3) sin textura para que DrawMesh()
-        // no las pise con blankTex. Por eso aqui enlazamos a mano esas
-        // unidades y apuntamos los samplers a esos indices.
         int hasSurfTexVal = (b.normalTex != nullptr && b.specularTex != nullptr && b.diffuseTex != nullptr) ? 1 : 0;
         SetShaderValue(shader, locs.rpHasSurfaceTex, &hasSurfTexVal, SHADER_UNIFORM_INT);
+
         if (hasSurfTexVal) {
             int normalUnit = 1, specularUnit = 2, colorUnit = 3;
+
             rlActiveTextureSlot(normalUnit);
             rlEnableTexture(b.normalTex->id);
             SetShaderValue(shader, locs.rpNormalMap, &normalUnit, SHADER_UNIFORM_INT);
@@ -813,14 +822,11 @@ inline void UploadBodyUniforms(Shader& shader, const ShaderLocs& locs, const Bod
             rlActiveTextureSlot(0);
         }
 
-        // Marcas de impacto (Sistema 3): crateres permanentes, zonas de
-        // magma y onda expansiva en drawRockyPlanet(). 'localDir' ya
-        // esta en espacio-malla (ver WorldDirToMeshLocal en physics.h),
-        // listo para compararse con 'surfacePos' en el shader.
         Vector3 impDir[Body::MAX_IMPACT_MARKS]{};
         float   impRadius[Body::MAX_IMPACT_MARKS]{};
         float   impEnergy[Body::MAX_IMPACT_MARKS]{};
         float   impAge[Body::MAX_IMPACT_MARKS]{};
+
         for (int i = 0; i < b.impactMarkCount; ++i) {
             const ImpactMark& m = b.impactMarks[i];
             impDir[i]    = { (float)m.localDir.x, (float)m.localDir.y, (float)m.localDir.z };
@@ -828,6 +834,7 @@ inline void UploadBodyUniforms(Shader& shader, const ShaderLocs& locs, const Bod
             impEnergy[i] = m.energy;
             impAge[i]    = m.age;
         }
+
         SetShaderValueV(shader, locs.rpImpactDir,    impDir,    SHADER_UNIFORM_VEC3,  Body::MAX_IMPACT_MARKS);
         SetShaderValueV(shader, locs.rpImpactRadius, impRadius, SHADER_UNIFORM_FLOAT, Body::MAX_IMPACT_MARKS);
         SetShaderValueV(shader, locs.rpImpactEnergy, impEnergy, SHADER_UNIFORM_FLOAT, Body::MAX_IMPACT_MARKS);
@@ -843,6 +850,12 @@ inline void DrawStarHalo(const Vector3& p, float rad, const Color& starColor,
 {
     // Intensidad del halo según luminosidad y temperatura
     float haloIntensity = std::min(1.0f, 0.25f + std::log(std::max(1.0f, luminosity)) * 0.06f);
+    float mDwarf = 1.0f - ClampF((temp - 3400.0f) / (4100.0f - 3400.0f), 0.0f, 1.0f);
+    float kDwarf =
+        ClampF((temp - 3800.0f) / (4800.0f - 3800.0f), 0.0f, 1.0f) *
+        (1.0f - ClampF((temp - 5100.0f) / (5600.0f - 5100.0f), 0.0f, 1.0f));
+
+    haloIntensity *= 1.0f + activity * (mDwarf * 0.9f + kDwarf * 0.35f);
     if (temp > 8000.0f)  haloIntensity *= 1.5f;
     if (temp > 25000.0f) haloIntensity *= 2.0f;
     haloIntensity = std::min(haloIntensity, 1.5f);
@@ -1232,14 +1245,14 @@ inline void DrawDustField3D(const std::vector<DustParticle>& dust,
     } else if (g_fakeLightEnabled) {
         // Misma dirección fija que la estrella falsa de UploadLightUniforms().
         // No depende de la cámara.
-        const Vector3 FAKE_LIGHT_DIR = Vector3Normalize({ -0.45f, 0.35f, 0.82f });
+        const Vector3 FAKE_LIGHT_DIR = Vector3Normalize({ -0.45f, 0.0f, 0.82f });
 
         globalLightDir  = FAKE_LIGHT_DIR;
         globalLightDist = 10000.0f;
     }
     // Ambiente mínimo solo para evitar negro absoluto en anillos/polvo.
     // La iluminación principal sigue viniendo de la difusa real/falsa.
-    const float ambStrength = 0.025f;
+    const float ambStrength = 0;
 
     // Lookup id->Body* reconstruido una vez por frame (no por particula):
     // decenas/cientos de 'bodies' contra decenas de miles de particulas de
@@ -1270,7 +1283,7 @@ inline void DrawDustField3D(const std::vector<DustParticle>& dust,
     // Color "caliente": mismo tinte que ComputeBodyColor aplica a cuerpos NO
     // fragmento con heatSpike=1.0 (renderer.h ~214-216) -- reusa la misma
     // paleta de "recien expulsado/incandescente" en todo el motor.
-    const Color HOT_DUST_COLOR = {255, 200, 50, 255};
+    const Color HOT_DUST_COLOR = {210, 95, 35, 255};
 
     // HEAT_BUCKET_COUNT=4: heatSpike decae a -0.008/frame (~125 frames,
     // ~2.08s @60fps, de 1.0 a 0 -- ver UpdateDustLifecycle en physics.h).
@@ -1308,7 +1321,7 @@ inline void DrawDustField3D(const std::vector<DustParticle>& dust,
                    : std::min(HEAT_BUCKET_COUNT, (int)std::ceil(d.heatSpike / HEAT_BUCKET_STEP));
         Color heatedKey = key;
         if (bucket > 0) {
-            float bucketHeat = (float)bucket * HEAT_BUCKET_STEP; // 0.25, 0.5, 0.75, 1.0
+            float bucketHeat = (float)bucket * HEAT_BUCKET_STEP * 0.45f;
             heatedKey = {
                 (unsigned char)ClampF(key.r*(1-bucketHeat) + HOT_DUST_COLOR.r*bucketHeat, 0,255),
                 (unsigned char)ClampF(key.g*(1-bucketHeat) + HOT_DUST_COLOR.g*bucketHeat, 0,255),
@@ -1333,7 +1346,7 @@ inline void DrawDustField3D(const std::vector<DustParticle>& dust,
                     // - Con luz falsa: misma dirección fija global usada por UploadLightUniforms().
                     Vector3D toLight = mainStar
                         ? NormalizeSafe(mainStarPosPhys - host->pos)
-                        : NormalizeSafe(Vector3D{-0.45, 0.35, 0.82});
+                        : NormalizeSafe(Vector3D{-0.45, 0.0, 0.82});
 
                     Vector3D rel = d.pos - host->pos;
 
@@ -1429,6 +1442,7 @@ inline void DrawDustField3D(const std::vector<DustParticle>& dust,
 // ── Locs del shader de llamaradas ────────────────────────────
 struct FlareShaderLocs {
     int realTime, temp, stellarActivity, flareIndex, flareGrow;
+    int flareHeightMult, flareMode, flareAsym, flareBurst, flareFade;
 };
 
 inline FlareShaderLocs GetFlareShaderLocs(Shader& sh) {
@@ -1438,6 +1452,11 @@ inline FlareShaderLocs GetFlareShaderLocs(Shader& sh) {
     l.stellarActivity = GetShaderLocation(sh, "stellarActivity");
     l.flareIndex      = GetShaderLocation(sh, "flareIndex");
     l.flareGrow       = GetShaderLocation(sh, "flareGrow");
+    l.flareHeightMult = GetShaderLocation(sh, "flareHeightMult");
+    l.flareMode       = GetShaderLocation(sh, "flareMode");
+    l.flareAsym       = GetShaderLocation(sh, "flareAsym");
+    l.flareBurst      = GetShaderLocation(sh, "flareBurst");
+    l.flareFade       = GetShaderLocation(sh, "flareFade");
     return l;
 }
 
@@ -1459,7 +1478,7 @@ inline Mesh GenMeshArchRibbon(float archHeight, float phiHalf, float ribbonWidth
     m.indices   = (unsigned short*)MemAlloc(nT * 3 * sizeof(unsigned short));
 
     float hw    = ribbonWidth * 0.5f;
-    float rBase = 1.05f; // ligeramente sobre la superficie para evitar z-fighting
+    float rBase = 1.0f; // ligeramente DENTRO de la estrella: evita que las flares floten
 
     for (int i = 0; i <= segs; i++) {
         float t   = (float)i / (float)segs;
@@ -1493,11 +1512,202 @@ inline Mesh GenMeshArchRibbon(float archHeight, float phiHalf, float ribbonWidth
     return m;
 }
 
+// ── Malla de jet radial: NO ribbon ───────────────────────────
+// Eje local +Z = dirección radial hacia fuera de la estrella.
+// La base empieza como punto dentro de la superficie para no flotar.
+inline Mesh GenMeshRadialJet(float baseR = 1.0f,
+                             float length = 0.90f,
+                             float maxWidth = 0.105f,
+                             int segs = 28,
+                             int sides = 10)
+{
+    int rings = segs + 1;
+    int nV = rings * sides;
+    int nT = segs * sides * 2;
+
+    Mesh m = {};
+    m.vertexCount   = nV;
+    m.triangleCount = nT;
+    m.vertices  = (float*)MemAlloc(nV * 3 * sizeof(float));
+    m.texcoords = (float*)MemAlloc(nV * 2 * sizeof(float));
+    m.normals   = (float*)MemAlloc(nV * 3 * sizeof(float));
+    m.indices   = (unsigned short*)MemAlloc(nT * 3 * sizeof(unsigned short));
+
+    for (int i = 0; i <= segs; ++i) {
+        float t = (float)i / (float)segs;
+
+        // Sale desde punto/casi punto en la superficie y se abre como plasma.
+        float z = baseR + length * t;
+
+        // Ancho cero en la base: esto elimina el "aro flotante".
+        float envelope = sinf(PI * t);
+        float taper    = powf(1.0f - t, 0.35f);
+        float baseFoot = maxWidth * 0.16f;
+        float w = baseFoot * (1.0f - t) + maxWidth * envelope * taper;
+
+        for (int j = 0; j < sides; ++j) {
+            float a = 2.0f * PI * (float)j / (float)sides;
+            float x = cosf(a) * w;
+            float y = sinf(a) * w;
+
+            int v = i * sides + j;
+            m.vertices[v*3+0] = x;
+            m.vertices[v*3+1] = y;
+            m.vertices[v*3+2] = z;
+
+            m.texcoords[v*2+0] = t;
+            m.texcoords[v*2+1] = (float)j / (float)sides;
+
+            Vector3 n = Vector3Normalize({x, y, 0.20f});
+            m.normals[v*3+0] = n.x;
+            m.normals[v*3+1] = n.y;
+            m.normals[v*3+2] = n.z;
+        }
+    }
+
+    int idx = 0;
+    for (int i = 0; i < segs; ++i) {
+        for (int j = 0; j < sides; ++j) {
+            int j2 = (j + 1) % sides;
+
+            unsigned short a = (unsigned short)(i * sides + j);
+            unsigned short b = (unsigned short)(i * sides + j2);
+            unsigned short c = (unsigned short)((i + 1) * sides + j);
+            unsigned short d = (unsigned short)((i + 1) * sides + j2);
+
+            m.indices[idx++] = a;
+            m.indices[idx++] = c;
+            m.indices[idx++] = b;
+
+            m.indices[idx++] = b;
+            m.indices[idx++] = c;
+            m.indices[idx++] = d;
+        }
+    }
+
+    UploadMesh(&m, false);
+    return m;
+}
+
+inline float SmoothStepF(float edge0, float edge1, float x) {
+    float denom = edge1 - edge0;
+    if (fabsf(denom) < 1e-6f) return (x >= edge1) ? 1.0f : 0.0f;
+
+    float t = ClampF((x - edge0) / denom, 0.0f, 1.0f);
+    return t * t * (3.0f - 2.0f * t);
+}
+
+// ── Malla de puff/domo: NO ribbon ────────────────────────────
+// Blob unido a la superficie por una base pequeña, no cinta aplastada.
+// ── Malla de puff/erupción fallida: penacho lobulado, NO ribbon ─────────
+// Eje local +Z = dirección radial.
+// La base tiene footprint real sobre la superficie; el shader proyecta
+// los vértices para que length(pos) == radio shell real.
+inline Mesh GenMeshFlarePuff(float baseR = 1.0f,
+                             float height = 0.95f,
+                             float maxWidth = 0.42f,
+                             int rings = 22,
+                             int sides = 18)
+{
+    int nV = (rings + 1) * sides;
+    int nT = rings * sides * 2;
+
+    Mesh m = {};
+    m.vertexCount   = nV;
+    m.triangleCount = nT;
+    m.vertices  = (float*)MemAlloc(nV * 3 * sizeof(float));
+    m.texcoords = (float*)MemAlloc(nV * 2 * sizeof(float));
+    m.normals   = (float*)MemAlloc(nV * 3 * sizeof(float));
+    m.indices   = (unsigned short*)MemAlloc(nT * 3 * sizeof(unsigned short));
+
+    for (int i = 0; i <= rings; ++i) {
+        float t = (float)i / (float)rings;
+
+        // La erupción fallida debe verse grande desde lejos:
+        // sube bastante, pero no forma "cabeza de hongo".
+        float rise = powf(t, 0.82f);
+        float z = baseR + height * rise;
+
+        // Footprint pequeño, cuerpo que se abre como abanico y luego se deshilacha.
+        float open  = SmoothStepF(0.02f, 0.30f, t);
+        float fadeTop = 1.0f - SmoothStepF(0.82f, 1.0f, t);
+
+        // No cerramos en una bola: mantenemos una cola abierta/filamentosa.
+        float plume = sinf(PI * ClampF(t, 0.0f, 1.0f));
+        float w = 0.035f * (1.0f - t) + maxWidth * open * (0.35f + 0.65f * plume) * (0.55f + 0.45f * fadeTop);
+
+        for (int j = 0; j < sides; ++j) {
+            float a = 2.0f * PI * (float)j / (float)sides;
+
+            // Aplastado vertical/lateral: más abanico de plasma que globo.
+            float fanX = cosf(a);
+            float fanY = sinf(a) * 0.32f;
+
+            // Filamentos: no todos los radios tienen el mismo ancho.
+            float filament =
+                1.0f
+                + 0.22f * sinf(a * 3.0f + t * 5.0f + 1.1f)
+                + 0.13f * sinf(a * 7.0f - t * 8.0f + 0.4f);
+
+            // Más rotura hacia la parte alta.
+            float shred = 1.0f + 0.18f * t * sinf(a * 5.0f + t * 13.0f);
+
+            float ww = w * filament * shred;
+
+            // Ligera inclinación lateral: parece material arrastrado por campo magnético,
+            // no una explosión vertical simétrica.
+            float lean = (t * t) * maxWidth * 0.22f;
+
+            float x = fanX * ww + lean;
+            float y = fanY * ww;
+
+            int v = i * sides + j;
+            m.vertices[v*3+0] = x;
+            m.vertices[v*3+1] = y;
+            m.vertices[v*3+2] = z;
+
+            m.texcoords[v*2+0] = t;
+            m.texcoords[v*2+1] = (float)j / (float)sides;
+
+            Vector3 n = Vector3Normalize({x, y, std::max(0.10f, z - baseR)});
+            m.normals[v*3+0] = n.x;
+            m.normals[v*3+1] = n.y;
+            m.normals[v*3+2] = n.z;
+        }
+    }
+
+    int idx = 0;
+    for (int i = 0; i < rings; ++i) {
+        for (int j = 0; j < sides; ++j) {
+            int j2 = (j + 1) % sides;
+
+            unsigned short a = (unsigned short)(i * sides + j);
+            unsigned short b = (unsigned short)(i * sides + j2);
+            unsigned short c = (unsigned short)((i + 1) * sides + j);
+            unsigned short d = (unsigned short)((i + 1) * sides + j2);
+
+            m.indices[idx++] = a;
+            m.indices[idx++] = c;
+            m.indices[idx++] = b;
+
+            m.indices[idx++] = b;
+            m.indices[idx++] = c;
+            m.indices[idx++] = d;
+        }
+    }
+
+    UploadMesh(&m, false);
+    return m;
+}
+
 // ── Llamaradas solares: N arcos-cinta aditivos alrededor de la estrella ──────────
 // Cada arco tiene orientacion aleatoria determinista y textura unica (flareIndex).
 // El shader anima el fuego independientemente de camara/pausa via realTime.
 inline void DrawStarFlares(const Body& b, Shader& sh, const FlareShaderLocs& fl,
-                            Model& archModel, int nFlares)
+                            Model& archModel,
+                            Model& jetModel,
+                            Model& puffModel,
+                            int nFlares)
 {
     if (!b.isStar || b.stellarActivity < 0.01f) return;
 
@@ -1507,9 +1717,25 @@ inline void DrawStarFlares(const Body& b, Shader& sh, const FlareShaderLocs& fl,
     float tp   = (float)b.temperature;
     float rt   = (float)GetTime();
 
+    float mDwarf = 1.0f - ClampF((tp - 3400.0f) / (4100.0f - 3400.0f), 0.0f, 1.0f);
+
+    float kDwarf =
+        ClampF((tp - 3800.0f) / (4800.0f - 3800.0f), 0.0f, 1.0f) *
+        (1.0f - ClampF((tp - 5100.0f) / (5600.0f - 5100.0f), 0.0f, 1.0f));
+
+    float gDwarf =
+        ClampF((tp - 5200.0f) / (5600.0f - 5200.0f), 0.0f, 1.0f) *
+        (1.0f - ClampF((tp - 6100.0f) / (6600.0f - 6100.0f), 0.0f, 1.0f));
+
+    float spectralAct = ClampF(
+        act * (1.0f + mDwarf * 1.7f + kDwarf * 0.55f - gDwarf * 0.35f),
+        0.02f,
+        1.0f
+    );
+
     SetShaderValue(sh, fl.realTime,        &rt,  SHADER_UNIFORM_FLOAT);
     SetShaderValue(sh, fl.temp,            &tp,  SHADER_UNIFORM_FLOAT);
-    SetShaderValue(sh, fl.stellarActivity, &act, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(sh, fl.stellarActivity, &spectralAct, SHADER_UNIFORM_FLOAT);
 
     BeginBlendMode(BLEND_ADDITIVE);
     rlDisableDepthMask();
@@ -1518,7 +1744,15 @@ inline void DrawStarFlares(const Body& b, Shader& sh, const FlareShaderLocs& fl,
     // Seed determinista por estrella (misma estrella → mismo patron de arcos)
     float starSeed = (float)(b.mass / M_SUN) * 2.618f + (float)b.temperature * 1e-4f;
     // Cantidad de arcos segun actividad: 5 base + hasta 7 extra
-    int K = std::min(nFlares, 5 + (int)(act * 7.0f));
+    // M: muchas llamaradas. K: intermedio. G/Sol: más estable.
+    // Slots visibles potenciales.
+    // Una estrella G/Sol estable NO debe quedar condenada a solo 2 anclas eternas:
+    // tiene menos actividad fuerte, pero puede tener varios eventos pequeños/sutiles.
+    int K = std::min(
+        nFlares,
+        4 + (int)(spectralAct * (4.0f + mDwarf * 8.0f + kDwarf * 3.0f))
+    );
+    K = std::max(0, K);
 
     auto hh = [](float x) -> float { return x - floorf(x); };
     auto ss = [](float a, float b, float x) -> float {
@@ -1536,54 +1770,213 @@ inline void DrawStarFlares(const Body& b, Shader& sh, const FlareShaderLocs& fl,
         // Hashes de ciclo de vida: constantes por llamarada (cada una tiene su propio periodo)
         float hL1    = hh(sinf(fi * 127.1f + starSeed) * 43758.5f);
         float hL2    = hh(sinf(fi * 311.7f + starSeed * 1.3f) * 23419.7f);
-        float period = 12.0f + hL1 * 14.0f;             // 12-26 segundos por ciclo
+        float period = 18.0f + hL1 * 34.0f;             // base tranquila
+        period *= (1.0f - mDwarf * 0.62f);              // enanas rojas: más frecuente
+        period *= (1.0f + gDwarf * 0.75f);              // tipo Sol/G: más intervalo
+        period = std::max(4.0f, period);
         float phase  = fmodf(rt / period + hL2, 1.0f);  // fraccion dentro del ciclo actual
+
+        // Cada ciclo de vida es un EVENTO nuevo.
+        // Antes: la posicion dependia solo de i + starSeed -> misma llamarada eterna.
+        // Ahora: i + cycleId + starSeed -> misma durante el ciclo, distinta al renacer.
+        float cycleId = floorf(rt / period + hL2);
+        float eventSeed = starSeed + fi * 37.173f + cycleId * 91.731f;
+
+        // Probabilidad de que este evento realmente exista.
+        // En el Sol: varios slots posibles, pero no todos activos a la vez.
+        // En M/K activas: más eventos simultáneos.
+        float eventPresence = ClampF(0.42f + spectralAct * 0.45f + mDwarf * 0.28f + kDwarf * 0.10f - gDwarf * 0.08f, 0.25f, 0.95f);
+        float hPresence = hh(sinf(eventSeed * 151.7f + 12.9f) * 76123.45f);
+        if (hPresence > eventPresence) continue;
 
         // Ciclo geometrico: el arco nace pequeno desde la superficie, crece y colapsa
         // lifeScale=0 → arch hidden inside star (depth-tested); lifeScale=1 → max extension
         // Fase 1: plasma recorre la parabola de UV=0 a UV=1 (35% del ciclo)
         // Fase 2: arco completo formado (30% del ciclo)
         // Fase 3: colapso por escala geometrica, arco se encoge hacia la estrella (35%)
-        float flareGrow, lifeScale;
+        float flareGrow, lifeScale, flareFade;
+
         if (phase < 0.35f) {
+            // Nacimiento: se revela desde el pie.
             flareGrow = phase / 0.35f;
             lifeScale = 1.0f;
-        } else if (phase < 0.65f) {
+
+            // Fade-in suave para que no aparezca de golpe.
+            flareFade = ss(0.00f, 0.10f, phase);
+        }
+        else if (phase < 0.65f) {
+            // Vida plena.
             flareGrow = 1.0f;
             lifeScale = 1.0f;
-        } else {
+            flareFade = 1.0f;
+        }
+        else {
+            // Muerte: mantiene forma general, pero se deshace visualmente.
             flareGrow = 1.0f;
-            lifeScale = ss(1.0f, 0.65f, phase);
+
+            float deathT = (phase - 0.65f) / 0.35f;
+
+            // Encogimiento moderado, no desaparición instantánea.
+            lifeScale = 1.0f - ss(0.15f, 1.0f, deathT) * 0.65f;
+
+            // Transparencia fuerte hacia el final.
+            flareFade = 1.0f - ss(0.00f, 1.0f, deathT);
         }
         if (flareGrow < 0.02f) continue;
         if (lifeScale < 0.04f) continue;
 
-        // Hashes de posicion: cambian en cada ciclo para que la llamarada surja en otro lugar
-        float cycleN = floorf(rt / period + hL2);
-        float h1v = hh(sinf(fi * 127.1f + starSeed + cycleN *  7.3f) * 43758.5f);
-        float h2v = hh(sinf(fi * 311.7f + starSeed * 1.3f + cycleN * 13.7f) * 23419.7f);
-        float h3v = hh(sinf(fi * 419.2f + starSeed * 0.7f + cycleN * 19.3f) * 31627.2f);
+        SetShaderValue(sh, fl.flareGrow, &flareGrow, SHADER_UNIFORM_FLOAT);
+        SetShaderValue(sh, fl.flareFade, &flareFade, SHADER_UNIFORM_FLOAT);
 
-        // Orientacion: offset fijo de la llamarada + rotacion actual de la estrella
-        float yaw   = h1v * 360.0f + starRotYaw;
-        float pitch = (h2v - 0.5f) * 140.0f;
-        float roll  = h3v * 360.0f;
 
-        Matrix rot = MatrixMultiply(
-            MatrixMultiply(MatrixRotateX(pitch * DEG2RAD), MatrixRotateY(yaw * DEG2RAD)),
-            MatrixRotateZ(roll * DEG2RAD));
-        archModel.transform = rot;
+        float flareIdx = (float)i;
+        SetShaderValue(sh, fl.flareIndex, &flareIdx, SHADER_UNIFORM_FLOAT);
 
-        float heightVar = 0.7f + h3v * 0.7f;
-        // lifeScale hace que el arco crezca desde 0 hasta su maximo y vuelva a 0
-        float archScale = rR * (1.0f + giantF + act * 0.4f) * heightVar * lifeScale;
-        float widthMult = 0.35f + h2v * 0.85f;
+        float h1v = hh(sinf(eventSeed * 127.1f + 11.7f) * 43758.5f);
+        float h2v = hh(sinf(eventSeed * 311.7f + 23.3f) * 23419.7f);
+        float h3v = hh(sinf(eventSeed * 419.2f + 41.9f) * 31627.2f);
+        float h4v = hh(sinf(eventSeed * 733.1f + 59.4f) * 91827.13f);
+        float h5v = hh(sinf(eventSeed * 991.7f + 73.8f) * 27183.91f);
+        float h6v = hh(sinf(eventSeed * 577.9f + 97.2f) * 51749.37f);
 
-        float fi_f = fi + cycleN * 100.0f;
-        SetShaderValue(sh, fl.flareIndex, &fi_f, SHADER_UNIFORM_FLOAT);
-        SetShaderValue(sh, fl.flareGrow,  &flareGrow, SHADER_UNIFORM_FLOAT);
-        DrawModelEx(archModel, p, {0,1,0}, 0.0f,
-            {archScale, archScale * widthMult, archScale}, WHITE);
+        // Punto de anclaje del EVENTO actual.
+        // Permanece fijo durante este ciclo de vida, rota con b.rotationAngle,
+        // y cambia cuando la llamarada muere y renace en otro ciclo.
+        float lon = (h1v * 360.0f + starRotYaw) * DEG2RAD;
+        float lat = (h2v - 0.5f) * 140.0f * DEG2RAD;
+
+        Vector3 radial = {
+            cosf(lat) * sinf(lon),
+            sinf(lat),
+            cosf(lat) * cosf(lon)
+        };
+        radial = Vector3Normalize(radial);
+
+        Vector3 upRef = (fabsf(radial.y) > 0.96f)
+            ? Vector3{1.0f, 0.0f, 0.0f}
+            : Vector3{0.0f, 1.0f, 0.0f};
+
+        Vector3 tangentX = Vector3Normalize(Vector3CrossProduct(upRef, radial));
+        Vector3 tangentY = Vector3Normalize(Vector3CrossProduct(radial, tangentX));
+
+        float rollRad = h3v * 360.0f * DEG2RAD;
+        float cR = cosf(rollRad);
+        float sR = sinf(rollRad);
+
+        Vector3 bx = Vector3Add(Vector3Scale(tangentX, cR), Vector3Scale(tangentY, sR));
+        Vector3 by = Vector3Add(Vector3Scale(tangentY, cR), Vector3Scale(tangentX, -sR));
+        Vector3 bz = radial;
+
+        Matrix rot = {
+            bx.x, by.x, bz.x, 0.0f,
+            bx.y, by.y, bz.y, 0.0f,
+            bx.z, by.z, bz.z, 0.0f,
+            0.0f, 0.0f, 0.0f, 1.0f
+        };
+
+        // Modo e intensidad del EVENTO actual.        
+        // M Quedan estables durante el ciclo, pero pueden cambiar al renacer.
+
+
+        float hMode  = h4v;
+        float hBurst = h5v;
+
+
+        // 0 = arco normal
+        // 1 = jet / pluma
+        // 2 = erupcion fallida / puff
+        // Garantiza variedad visible: no todo queda a merced del azar.
+        // 0 = arco, 1 = jet, 2 = puff.
+        float flareMode = 0.0f; // arco por defecto
+
+        // Distribución por tipo estelar:
+        // G/Sol: arcos dominan, pocos jets/puffs.
+        // M/K activas: más jets y puffs.
+        float jetChance  = ClampF(0.10f + spectralAct * 0.18f + mDwarf * 0.22f + kDwarf * 0.08f - gDwarf * 0.06f, 0.04f, 0.45f);
+        float puffChance = ClampF(0.08f + spectralAct * 0.14f + mDwarf * 0.18f + kDwarf * 0.06f - gDwarf * 0.04f, 0.03f, 0.35f);
+
+        if (hMode < jetChance) {
+            flareMode = 1.0f;
+        }
+        else if (hMode < jetChance + puffChance) {
+            flareMode = 2.0f;
+        }
+        else {
+            flareMode = 0.0f;
+        }
+
+        float flareAsym  = h2v;
+        float flareBurst = ClampF(0.35f + hBurst * 0.95f + spectralAct * 0.35f, 0.0f, 1.4f);
+
+        SetShaderValue(sh, fl.flareMode,  &flareMode,  SHADER_UNIFORM_FLOAT);
+        SetShaderValue(sh, fl.flareAsym,  &flareAsym,  SHADER_UNIFORM_FLOAT);
+        SetShaderValue(sh, fl.flareBurst, &flareBurst, SHADER_UNIFORM_FLOAT);
+
+        float heightVar = 0.65f + h6v * 0.65f;
+
+        // Nerf real: antes la actividad/M-dwarf/giantF multiplicaban demasiado.
+        // Ahora la actividad hace la llamarada más viva, no absurdamente más larga.
+        float flareScale =
+            0.72f +
+            mDwarf * 0.42f +
+            kDwarf * 0.18f -
+            gDwarf * 0.08f;
+
+        float activityHeight =
+            0.82f +
+            giantF * 0.28f +
+            spectralAct * 0.22f;
+
+        float heightMult =
+            activityHeight *
+            heightVar *
+            lifeScale *
+            flareScale;
+
+        // Jets siguen siendo un poco más altos, pero no monstruosos.
+        if (flareMode == 1.0f) {
+            heightMult *= 1.05f + flareBurst * 0.22f;
+        }
+        // Puffs deben ser cortos.
+        else if (flareMode == 2.0f) {
+            // Erupción fallida: grande y ancha, pero menos vertical que un jet.
+            heightMult *= 0.68f + flareBurst * 0.22f;
+        }
+
+        // Tope por modo. Antes 5.2 era demasiado bestia.
+        float maxHeight =
+            1.55f +
+            mDwarf * 0.40f +
+            kDwarf * 0.15f +
+            giantF * 0.20f;
+
+        if (flareMode == 1.0f) {
+            maxHeight *= 1.12f;
+        }
+        else if (flareMode == 2.0f) {
+            maxHeight = std::min(maxHeight, 1.35f + flareBurst * 0.20f);
+        }
+
+
+        heightMult = ClampF(heightMult, 0.08f, maxHeight);
+        SetShaderValue(sh, fl.flareHeightMult, &heightMult, SHADER_UNIFORM_FLOAT);
+
+        Model* flareModel = &archModel;
+
+        if (flareMode == 1.0f) {
+            flareModel = &jetModel;
+        }
+        else if (flareMode == 2.0f) {
+            flareModel = &puffModel;
+        }
+
+        // IMPORTANTÍSIMO:
+        // Escala uniforme = radio real de la estrella.
+        // Nada de rR * widthMult en X/Y, porque eso despega las bases.
+        Vector3 flareScaleVec = { rR, rR, rR };
+
+        flareModel->transform = rot;
+        DrawModelEx(*flareModel, p, {0,1,0}, 0.0f, flareScaleVec, WHITE);
     }
 
     rlDrawRenderBatchActive();

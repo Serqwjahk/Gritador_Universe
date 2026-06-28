@@ -427,6 +427,22 @@ inline void DrawObjectInspector(GuiState& gui, Body& b,
         DrawCompositionList(b.atmospheric_composition);
     }
 
+    if (b.isRockyPlanet && b.volatileBudget > 0.0f &&
+        ImGui::CollapsingHeader("Hidrosfera / Volatiles", ImGuiTreeNodeFlags_DefaultOpen)) {
+
+        float liquid = ClampF(
+            b.volatileBudget - b.iceFraction - b.vaporFraction,
+            0.0f,
+            b.volatileBudget
+        );
+
+        ImGui::Text("Volatiles totales: %.2f%%", b.volatileBudget * 100.0f);
+        ImGui::Text("Agua liquida:     %.2f%%", liquid * 100.0f);
+        ImGui::Text("Hielo:            %.2f%%", b.iceFraction * 100.0f);
+        ImGui::Text("Vapor:            %.2f%%", b.vaporFraction * 100.0f);
+        ImGui::Text("Nivel visual mar: %.2f%%", b.rockyPlanet.waterLevel * 100.0f);
+    }
+
     // ── Visuales: toggles de atmosfera/nubes (ver hideAtmosphere/
     //    hideClouds en body.h) -- solo afectan el dibujado. ──
     bool hasAtmo   = b.atmosphereDensity > 0.001f;

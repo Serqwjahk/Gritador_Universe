@@ -394,6 +394,19 @@ struct Body {
 //    NUNCA lo desactiva por fragAge. Reservado para el sistema de anillos
 //    planetarios (proxima implementacion); todavia no se generan
 //    particulas con isRing=true.
+// Estado fisico del polvo/escombro visual.
+// No todo polvo es basura: si esta ligado, formando anillo o acreciendo,
+// NO debe morir por un TTL fijo.
+enum class DustState {
+    Debris = 0,        // eyeccion reciente / nube caotica
+    BoundOrbit,        // orbita ligada a un cuerpo masivo
+    RingCandidate,     // orbita estable cerca del ecuador del host
+    RingParticle,      // material persistente de anillo
+    Accreting,         // parte de una nube densa/fria que puede crecer
+    ProtoBodySeed,     // agregado listo para promoverse a Body
+    Decaying           // basura real: no ligada/no util
+};
+
 struct DustParticle {
     Vector3D pos{}, vel{};
     double radius   = 100.0;
@@ -405,6 +418,17 @@ struct DustParticle {
     // --- Naturaleza 3D / Particle Pool (ver comentario de arriba) ---
     bool   active = false;   // false = slot libre, reutilizable por el pool
     bool   isRing = false;   // true = polvo de anillo (sin muerte por fragAge)
+    DustState state = DustState::Debris;
+
+    // Tiempo acumulado en orbita estable alrededor de hostBodyId.
+    // Si supera cierto umbral, el polvo deja de ser basura y pasa a anillo.
+    double stableOrbitTime = 0.0;
+
+    // Edad util mientras esta ligado/acreciendo. No mata por si sola.
+    double usefulAge = 0.0;
+
+    // Cache ligera para acrecion / diagnostico.
+    double densityScore = 0.0;
 
     // ID del Body duenio de este anillo (ver Body::id), -1 si no aplica
     // (polvo de colision, isRing=false). Permite recalcular cada frame la

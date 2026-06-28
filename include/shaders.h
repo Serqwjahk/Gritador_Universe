@@ -164,6 +164,7 @@ uniform int isCloudShell;
 // ============================================================
 uniform int   isRockyPlanet;
 uniform float uWaterLevel;     // 0 = planeta seco (todo "tierra firme")
+uniform float uOceanIce;       // 0 = oceano liquido, 1 = oceano congelado
 uniform float uCraterDensity;  // 0..1: intensidad de crateres tipo Voronoi
 uniform float uCloudDensity;   // 0..1 normalmente: cobertura de la capa de nubes
                                 // (>1 fuerza cobertura total, ver lo/hi en
@@ -862,6 +863,10 @@ vec3 boostSat(vec3 c, float s) {
     return clamp(mix(vec3(lum), c, s), 0.0, 2.0);
 }
 
+float invSmooth(float hi, float lo, float x) {
+    return 1.0 - smoothstep(lo, hi, x);
+}
+
 // ============================================================
 //  COLOR ESTELAR ARTISTICO (Space Engine / Universe Sandbox)
 //  blackBodyColor() es fisicamente correcto pero casi blanco
@@ -889,6 +894,109 @@ vec3 artisticStarColor(float tK) {
 }
 
 // ============================================================
+//  PERFIL ESTELAR POR TIPO ESPECTRAL
+//  M/K/G/F/A/B/O aproximado por temperatura efectiva.
+// ============================================================
+struct StarProfile {
+    float mDwarf;
+    float kDwarf;
+    float gDwarf;
+    float hotStar;
+    float giantLike;
+
+    float activity;
+    float flareBias;
+    float flareSize;
+    float spotAmount;
+    float granScale;
+    float granContrast;
+    float cellSharpness;
+    float filamentStrength;
+};
+
+StarProfile getStarProfile(float tK, float mSolar, float baseActivity) {
+    StarProfile p;
+
+    p.mDwarf   = 1.0 - smoothstep(3400.0, 4100.0, tK);
+    p.kDwarf   = smoothstep(3800.0, 4800.0, tK) * (1.0 - smoothstep(5100.0, 5600.0, tK));
+    p.gDwarf   = smoothstep(5200.0, 5600.0, tK) * (1.0 - smoothstep(6100.0, 6600.0, tK));
+    p.hotStar  = smoothstep(7500.0, 12000.0, tK);
+    p.giantLike = smoothstep(3.0, 8.0, mSolar) * (1.0 - smoothstep(7000.0, 9000.0, tK));
+
+    // Enanas rojas: actividad visual alta aunque stellarActivity base sea moderado.
+    // G/K: más tranquilas. Hot stars: más lisas, más viento/radiación que manchas.
+    float coolBoost = p.mDwarf * 1.55 + p.kDwarf * 0.55;
+    float stableDamp = p.gDwarf * 0.45;
+    p.activity = clamp(baseActivity * (1.0 + coolBoost - stableDamp), 0.0, 1.0);
+
+    p.flareBias = clamp(0.10 + p.mDwarf * 0.85 + p.kDwarf * 0.25 - p.gDwarf * 0.25, 0.02, 1.0);
+    p.flareSize = clamp(0.55 + p.mDwarf * 1.35 + p.kDwarf * 0.35 - p.gDwarf * 0.20, 0.35, 2.2);
+
+    p.spotAmount = clamp(0.12 + p.activity * 0.85 + p.mDwarf * 0.65 - p.hotStar * 0.70, 0.0, 1.4);
+
+    // Visual: M = celdas pequeñas/contrastadas; Sol/K = granulado medio; gigantes = pocas celdas grandes.
+    p.granScale = mix(7.5, 3.2, p.giantLike);
+    p.granScale = mix(p.granScale, 10.5, p.mDwarf);
+    p.granScale = mix(p.granScale, 5.5, p.kDwarf);
+    p.granScale = mix(p.granScale, 6.8, p.gDwarf);
+    p.granScale = mix(p.granScale, 13.0, p.hotStar);
+
+    p.granContrast = clamp(0.35 + p.mDwarf * 0.75 + p.kDwarf * 0.35 + p.gDwarf * 0.22 - p.hotStar * 0.18 + p.giantLike * 0.55, 0.20, 1.25);
+    p.cellSharpness = clamp(0.45 + p.mDwarf * 0.40 + p.giantLike * 0.35 - p.hotStar * 0.22, 0.25, 1.0);
+    p.filamentStrength = clamp(p.activity * (0.35 + p.mDwarf * 1.15 + p.kDwarf * 0.55), 0.0, 1.4);
+
+    return p;
+}
+
+// Voronoi celular 3D para granulación estelar real: centros calientes,
+// bordes oscuros intergranulares.
+float starCellField(vec3 p, out float edge, out float cellRnd) {
+    vec3 ip = floor(p);
+    vec3 fp = fract(p);
+    float d1 = 9.0;
+    float d2 = 9.0;
+    float rnd = 0.0;
+
+    for (int z = -1; z <= 1; z++)
+    for (int y = -1; y <= 1; y++)
+    for (int x = -1; x <= 1; x++) {
+        vec3 c = vec3(float(x), float(y), float(z));
+        vec3 r = vec3(
+            hash(ip + c + vec3(13.1, 7.7, 2.4)),
+            hash(ip + c + vec3(5.3, 17.2, 9.1)),
+            hash(ip + c + vec3(11.9, 3.4, 21.6))
+        );
+        vec3 q = c + r - fp;
+        float d = dot(q, q);
+        if (d < d1) {
+            d2 = d1;
+            d1 = d;
+            rnd = hash(ip + c + 31.7);
+        } else if (d < d2) {
+            d2 = d;
+        }
+    }
+
+    float f1 = sqrt(d1);
+    float f2 = sqrt(d2);
+    edge = clamp((f2 - f1) * 2.8, 0.0, 1.0);
+    cellRnd = rnd;
+    return f1;
+}
+
+float magneticArcMask(vec3 n, float t, float seed, float strength) {
+    float lon = atan(n.z, n.x);
+    float lat = asin(clamp(n.y, -1.0, 1.0));
+
+    float bands = sin(lon * 7.0 + sin(lat * 9.0 + seed) * 1.7 + t * 1.8);
+    float ropes = sin(lon * 13.0 - lat * 11.0 + t * 2.4 + seed * 3.1);
+    float braided = abs(bands * 0.65 + ropes * 0.35);
+
+    float activeLat = invSmooth(1.25, 0.15, abs(lat)); // más en latitudes medias/bajas
+    return smoothstep(0.78, 0.98, braided) * activeLat * strength;
+}
+
+// ============================================================
 //  ESTRELLA PROCEDURAL (Remastered — plasma, prominencias, flares)
 // ============================================================
 void drawStar() {
@@ -897,58 +1005,71 @@ void drawStar() {
     float mu = clamp(dot(N, V), 0.0, 1.0);
     float oneMu = 1.0 - mu;
 
-    // Tiempo y rotacion diferencial
-    float ts       = spinPhase * 0.0003;
-    float rotSpeed = clamp(2.0 / max(0.1, stellarMass), 0.15, 10.0);
-    float rA  = ts * rotSpeed;
+    // Tiempo + perfil espectral
+    float ts = spinPhase * 0.0003;
+
+    StarProfile sp = getStarProfile(temp, stellarMass, stellarActivity);
+
+    // Rotación REAL de la superficie.
+    // IMPORTANTE:
+    // - uSurfaceSpin viene de b.rotationAngle desde renderer.h.
+    // - Esto hace que granulación, manchas y red magnética giren con el cuerpo.
+    // - spinPhase/ts queda solo para animar hervor/plasma, NO para girar toda la textura.
+    float rA  = uSurfaceSpin;
     float crA = cos(rA), srA = sin(rA);
     vec3 rN = vec3(N.x*crA - N.z*srA, N.y, N.x*srA + N.z*crA);
-    float sA  = rA * 0.6;
+
+    // Mismo marco para manchas/faculas/red magnética.
+    // Antes sN usaba otra velocidad derivada de rA; eso hacía que capas visuales
+    // se deslizasen entre sí y no coincidieran con las llamaradas.
+    float sA  = uSurfaceSpin;
     float crS = cos(sA), srS = sin(sA);
     vec3 sN = vec3(N.x*crS - N.z*srS, N.y, N.x*srS + N.z*crS);
 
-    vec3 baseColor = boostSat(artisticStarColor(temp), 1.75);
+    vec3 baseColor = boostSat(artisticStarColor(temp), mix(1.35, 2.25, sp.mDwarf + sp.kDwarf));
 
-    // granContrast: cuanto del patron de granulacion se mezcla (0=uniforme, 1=maximo)
-    float cellScale = 3.5, granContrast = 1.0;
-    if      (stellarMass > 8.0 && temp < 6000.0)  { cellScale = 1.3; granContrast = 1.0; }
-    else if (temp < 4000.0)                         { cellScale = 4.5; granContrast = 0.90; }
-    else if (temp > 8000.0  && temp < 25000.0)      { cellScale = 7.0; granContrast = 0.28; }
-    else if (temp >= 25000.0)                       { cellScale = 4.0; granContrast = 0.07; }
+    float cellScale = sp.granScale;
+    float granContrast = sp.granContrast;
 
-    // ─── SUPERGRANULACION: celdas grandes, lentas ──────────────
-    vec3 sgPos  = rN * (cellScale * 0.28) + vec3(ts*0.11, ts*0.06, ts*0.04);
-    float sgWx  = fbm3(sgPos * 0.7 + vec3(3.1, 7.4, ts*0.2)) - 0.5;
-    float sgWz  = fbm3(sgPos * 0.7 + vec3(6.8, 1.9, ts*0.15)) - 0.5;
-    float superGran = granulation(sgPos + vec3(sgWx, 0.0, sgWz) * 0.6);
-    float sgSharp   = smoothstep(0.15, 0.85, superGran);
+    // ─── GRANULACIÓN CELULAR REAL: celdas convectivas + carriles oscuros ───
+    float edgeA, edgeB, rndA, rndB;
 
-    // ─── GRANULACION MEDIA: celdas convectivas superficiales ───
-    vec3 baseGPos = rN * cellScale + vec3(ts*0.9, ts*0.55, ts*0.35);
-    float wx = fbm3(baseGPos * 0.65 + vec3(1.7, 9.2, ts*0.4)) - 0.5;
-    float wz = fbm3(baseGPos * 0.65 + vec3(8.3, 2.8, ts*0.3)) - 0.5;
-    float gran     = granulation(baseGPos + vec3(wx, 0.0, wz) * 0.55);
-    float granSharp = smoothstep(0.18, 0.82, gran);
+    vec3 flow = vec3(
+        fbm3(rN * 2.0 + vec3(ts * 0.22, 3.1, 1.7)),
+        fbm3(rN * 2.0 + vec3(2.4, ts * 0.18, 5.3)),
+        fbm3(rN * 2.0 + vec3(6.7, 1.2, ts * 0.20))
+    ) - 0.5;
 
-    // ─── TURBULENCIA INTERGRANULAR: detalle fino en los bordes ─
-    vec3 igPos   = rN * (cellScale * 5.5) + vec3(ts*2.6, ts*1.4, ts*0.85);
-    float igTurb = (fbm5(igPos) - 0.5) * 0.13;
+    vec3 cellPosA = rN * cellScale + flow * mix(0.45, 1.15, sp.activity) + vec3(ts * 0.35, ts * 0.18, 0.0);
+    vec3 cellPosB = rN * (cellScale * 2.15) - flow * 0.6 + vec3(0.0, ts * 0.46, ts * 0.21);
 
-    // ─── COLOR DE SUPERFICIE CON ALTO CONTRASTE ────────────────
-    // Carriles intergranulares: plasma frio, casi negro
-    vec3 laneCol = artisticStarColor(temp * 0.83) * 0.25;
-    // Interiores de celda: plasma caliente, brillante (HDR deliberado)
-    vec3 cellCol = mix(baseColor, boostSat(artisticStarColor(min(40000.0, temp * 1.09)), 1.75), 0.28) * 1.70;
-    // Red magnetica en bordes de supergranulas: ligeramente mas caliente
-    vec3 netCol  = artisticStarColor(min(40000.0, temp * 1.14)) * 0.85;
+    float fA = starCellField(cellPosA, edgeA, rndA);
+    float fB = starCellField(cellPosB, edgeB, rndB);
 
-    // Composicion: granulacion media modulada por supergranulacion
-    vec3 granSurface = mix(laneCol, cellCol, granSharp);
-    granSurface *= mix(0.72, 1.02, sgSharp);
-    granSurface += netCol * (1.0 - sgSharp) * stellarActivity * 0.30;
-    granSurface += baseColor * igTurb;               // turbulencia fina
+    float laneA = 1.0 - smoothstep(0.08, mix(0.38, 0.18, sp.cellSharpness), edgeA);
+    float laneB = 1.0 - smoothstep(0.06, 0.22, edgeB);
 
-    // Blend entre base uniforme y patron de granulacion segun tipo estelar
+    float cellCore = invSmooth(0.72, 0.12, fA) * (0.82 + rndA * 0.28);
+    float smallBoil = invSmooth(0.65, 0.18, fB) * 0.35;
+
+    float boiling = clamp(cellCore + smallBoil - laneA * 0.75 - laneB * 0.25, 0.0, 1.25);
+
+    vec3 coolLane = artisticStarColor(temp * mix(0.72, 0.82, sp.hotStar)) * mix(0.16, 0.34, sp.hotStar);
+    vec3 hotCell  = artisticStarColor(min(40000.0, temp * mix(1.06, 1.18, sp.mDwarf + sp.kDwarf))) * mix(1.25, 2.15, granContrast);
+    vec3 midCell  = artisticStarColor(temp) * mix(0.65, 1.05, boiling);
+
+    vec3 granSurface = mix(coolLane, hotCell, boiling);
+    granSurface = mix(granSurface, midCell, 0.22);
+
+    // Red magnética: más visible en M/K activas, casi apagada en G tranquilas.
+    float mag = magneticArcMask(sN, ts, stellarMass * 17.13 + temp * 0.001, sp.filamentStrength);
+    vec3 magCol = artisticStarColor(min(40000.0, temp * 1.35)) * (1.2 + sp.mDwarf * 1.6);
+    granSurface += magCol * mag;
+
+    // Microturbulencia no uniforme, no “ruido de TV”.
+    float micro = fbm5(rN * (cellScale * 7.0) + vec3(ts * 2.2, ts * 1.4, ts * 0.9));
+    granSurface *= 1.0 + (micro - 0.5) * mix(0.08, 0.28, sp.activity + sp.mDwarf);
+
     vec3 surfColor = mix(baseColor, granSurface, granContrast);
 
     // ─── OSCURECIMIENTO AL LIMBO ────────────────────────────────
@@ -959,44 +1080,40 @@ void drawStar() {
     float ld = max(0.08, 1.0 - ldA*oneMu - ldB*oneMu*oneMu);
     surfColor *= ld;
 
-    // ─── MANCHAS ESTELARES ──────────────────────────────────────
-    if (stellarActivity > 0.04 && temp < 16000.0) {
-        float latZone = 1.0 - smoothstep(0.25, 0.95, abs(sN.y));
-        float sn      = fbm5(sN * 2.6 + vec3(0.0, ts*0.08, 0.0));
-        float thr     = 0.68 - stellarActivity * 0.28;
-        float bigSpot = smoothstep(thr, thr + 0.13, sn) * latZone;
-        float sn2     = fbm3(sN * 5.8 + vec3(ts*0.22, 0.0, ts*0.14));
-        float smlSpot = smoothstep(0.62, 0.74, sn2) * latZone * 0.55;
-        float spotF   = clamp(bigSpot + smlSpot, 0.0, 0.90) * stellarActivity;
-        if (spotF > 0.01) {
-            vec3 spotCol = blackBodyColor(temp * (0.70 + 0.12*(1.0-stellarActivity))) * 0.35;
-            surfColor = mix(surfColor, spotCol, spotF);
-        }
+    // ─── MANCHAS ESTELARES: M rojas con manchas grandes; G/K más sobrias ───
+    if (sp.spotAmount > 0.02 && temp < 17000.0) {
+        float latZone = invSmooth(0.98, 0.12, abs(sN.y));
+        float spotLarge = fbm5(sN * mix(2.0, 3.4, sp.mDwarf) + vec3(0.0, ts * 0.055, 0.0));
+        float spotSmall = fbm3(sN * mix(5.5, 9.0, sp.mDwarf) + vec3(ts * 0.16, 0.0, ts * 0.09));
+
+        float largeMask = smoothstep(0.72 - sp.spotAmount * 0.26, 0.86, spotLarge) * latZone;
+        float smallMask = smoothstep(0.66 - sp.spotAmount * 0.18, 0.82, spotSmall) * latZone * 0.65;
+
+        float spotF = clamp((largeMask + smallMask) * sp.spotAmount, 0.0, 0.95);
+        vec3 spotCol = artisticStarColor(temp * mix(0.58, 0.78, sp.hotStar)) * mix(0.18, 0.42, sp.hotStar);
+        surfColor = mix(surfColor, spotCol, spotF);
     }
 
-    // ─── FACULAS Y PUNTOS BRILLANTES MAGNETICOS ─────────────────
-    // (valores > 1.0 intencionales: simula hotspots visibles como blanco)
-    if (stellarActivity > 0.05 && temp < 15000.0) {
-        float fn  = fbm3(sN * 4.2 + vec3(ts*1.3, ts*0.45, 0.0));
-        float fac = max(0.0, fn - 0.50) * stellarActivity * 2.2;
-        float fn2 = fbm5(sN * 9.8 + vec3(ts*2.4, ts*1.1, ts*0.6));
-        float bp  = pow(max(0.0, fn2 - 0.71), 1.4) * stellarActivity * 7.0;
-        vec3 facCol = blackBodyColor(min(40000.0, temp * 1.22)) * 2.8;
-        vec3 bpCol  = blackBodyColor(min(40000.0, temp * 1.38)) * 4.8;
-        surfColor  += facCol * fac + bpCol * bp;
+    // ─── FACULAS / REGIONES ACTIVAS ───
+    if (sp.activity > 0.035 && temp < 18000.0) {
+        float activeNet = magneticArcMask(sN, ts * 1.7, temp * 0.004 + 8.1, sp.activity);
+        float facN = fbm5(sN * 11.0 + vec3(ts * 1.8, ts * 0.9, 0.0));
+        float fac = activeNet * smoothstep(0.42, 0.82, facN);
+
+        vec3 facCol = artisticStarColor(min(40000.0, temp * mix(1.18, 1.55, sp.mDwarf))) * mix(1.4, 4.2, sp.mDwarf + sp.kDwarf);
+        surfColor += facCol * fac * mix(0.25, 1.15, sp.activity);
     }
 
-    // ─── FIBRILLAS DE PLASMA EN TODO EL DISCO ───────────────────
-    if (stellarActivity > 0.05 && temp < 20000.0) {
-        vec3  fibPos  = rN * (cellScale * 8.8) + vec3(ts*3.1, ts*1.8, ts*0.9);
-        float fibN    = fbm5(fibPos);
-        float fibMask = max(0.0, fibN - 0.53);
-        float latAct  = smoothstep(0.55, 0.15, abs(rN.y)) * stellarActivity;
-        surfColor    += baseColor * fibMask * latAct * 1.2;
+    // ─── FILAMENTOS / CUERDAS MAGNÉTICAS SOBRE LA FOTOSFERA ───
+    if (sp.filamentStrength > 0.02 && temp < 22000.0) {
+        float ropes = magneticArcMask(rN, ts * 2.4, 19.7 + stellarMass, sp.filamentStrength);
+        float ropeNoise = fbm5(rN * 18.0 + vec3(ts * 3.2, ts * 1.5, 0.0));
+        vec3 ropeCol = artisticStarColor(min(40000.0, temp * 1.42)) * (0.7 + sp.mDwarf * 1.4);
+        surfColor += ropeCol * ropes * smoothstep(0.48, 0.88, ropeNoise);
     }
 
     // ─── CROMOSFERA ─────────────────────────────────────────────
-    float chromoFade  = smoothstep(0.28, 0.0, mu);
+    float chromoFade  = invSmooth(0.28, 0.0, mu);
     float chromoNoise = fbm3(rN * 7.5 + vec3(ts*1.9, ts*0.8, 0.0));
     vec3  chromoCol   = blackBodyColor(clamp(temp * 1.15, 2000.0, 40000.0)) * 1.4;
     surfColor = mix(surfColor, chromoCol, chromoFade * 0.45 * (0.4 + chromoNoise * 1.2));
@@ -1004,7 +1121,7 @@ void drawStar() {
     // ─── ESPICULAS ───────────────────────────────────────────────
     if (mu < 0.26 && temp < 15000.0) {
         float spicN    = fbm5(rN * 13.0 + vec3(ts*3.5, ts*1.8, 0.0));
-        float spicMask = smoothstep(0.26, 0.0, mu);
+        float spicMask = invSmooth(0.26, 0.0, mu);
         surfColor += baseColor * smoothstep(0.56, 0.74, spicN) * spicMask * 1.1;
     }
 
@@ -1016,24 +1133,35 @@ void drawStar() {
     if (temp > 25000.0) cScale *= 2.5;
     surfColor += blackBodyColor(min(40000.0, temp * 1.4)) * cScale * rim;
 
-    // ─── PROMINENCIAS Y ERUPCIONES (shader) ─────────────────────
-    if (stellarActivity > 0.02 && temp < 33000.0) {
-        float limbZone = smoothstep(0.33, 0.0, mu);
-        float pA  = atan(sN.z, sN.x);
-        float pn1 = fbm3(vec3(pA*3.1 + ts*0.42, sN.y*5.2, ts*0.21));
-        float pn2 = fbm3(vec3(pA*6.3 + ts*0.68, sN.y*8.8, ts*0.50) + vec3(1.9,0.7,0.4));
-        float prom = smoothstep(0.63, 0.83, pn1) * smoothstep(0.59, 0.79, pn2) * limbZone
-                     * stellarActivity * 4.5;
-        surfColor += mix(blackBodyColor(clamp(temp*0.80,2000.0,8000.0)),
-                         blackBodyColor(min(40000.0,temp*1.9))*2.8, pn2) * prom;
+    // ─── PROMINENCIAS Y ERUPCIONES: M = frecuentes/grandes; G/K = raras ───
+    if (sp.activity > 0.015 && temp < 33000.0) {
+        float limbZone = invSmooth(0.38, 0.0, mu);
 
-        float flareN   = fbm5(sN * 2.9 + vec3(ts*1.55, ts*0.72, 0.0));
-        float flareThr = 0.79 - stellarActivity * 0.19;
-        float flare    = smoothstep(flareThr, flareThr+0.09, flareN)
-                         * (limbZone*0.65 + smoothstep(0.90,0.70,mu)*0.35)
-                         * stellarActivity * 4.2;
-        vec3 flareTint = vec3(1.5, 0.50, 0.04) * (1.0 - clamp(temp/11000.0, 0.0, 1.0));
-        surfColor += (blackBodyColor(min(40000.0,temp*2.3))*3.8 + flareTint) * flare;
+        float pA = atan(sN.z, sN.x);
+        float cycle = floor(ts * mix(0.35, 1.35, sp.flareBias));
+        float phase = fract(ts * mix(0.35, 1.35, sp.flareBias));
+
+        float seed = hash(vec3(cycle, stellarMass * 9.1, temp * 0.003));
+        float activeWindow = smoothstep(0.00, 0.12, phase) * (1.0 - smoothstep(0.45 + 0.30 * sp.mDwarf, 0.95, phase));
+
+        float flareLongitude = sin(pA * mix(4.0, 9.0, sp.mDwarf) + seed * 6.2831);
+        float flareLat = fbm3(vec3(sN.y * 5.0, seed * 3.0, ts * 0.25));
+
+        float promMask = smoothstep(0.70 - sp.flareBias * 0.22, 0.92, flareLongitude * 0.5 + 0.5);
+        promMask *= smoothstep(0.45, 0.85, flareLat);
+        promMask *= limbZone * activeWindow * sp.activity;
+
+        vec3 promCold = artisticStarColor(clamp(temp * 0.78, 2000.0, 9000.0));
+        vec3 promHot  = artisticStarColor(min(40000.0, temp * mix(1.45, 2.35, sp.mDwarf)));
+        vec3 promCol  = mix(promCold, promHot * 3.2, phase);
+
+        surfColor += promCol * promMask * (2.0 + sp.flareSize * 3.2);
+
+        // Destellos en disco, no solo limbo.
+        float diskSpark = magneticArcMask(sN, ts * 4.1, seed * 31.0, sp.flareBias);
+        float sparkPulse = exp(-pow((phase - 0.18) / 0.10, 2.0));
+        vec3 sparkCol = artisticStarColor(min(40000.0, temp * 2.4)) * (1.5 + sp.flareSize * 2.5);
+        surfColor += sparkCol * diskSpark * sparkPulse * sp.activity;
     }
 
     // Efectos por tipo estelar
@@ -1058,12 +1186,15 @@ void drawStar() {
     // saturacion del color de entrada. El tonemapping por canal hacia
     // converger todo a blanco al comprimir valores HDR brillantes.
     surfColor  = max(surfColor, vec3(0.0));
-    surfColor *= 1.45;
+    float exposure = mix(1.35, 1.75, sp.mDwarf + sp.kDwarf);
+    exposure = mix(exposure, 1.20, sp.gDwarf);
+    exposure = mix(exposure, 1.05, sp.hotStar);
+
+    surfColor *= exposure;
     float lum  = dot(surfColor, vec3(0.2126, 0.7152, 0.0722));
     float lumT = 1.0 - exp(-lum);
     surfColor *= (lumT / max(lum, 0.0001));
     surfColor  = pow(surfColor, vec3(1.0 / 2.2));
-
     finalColor = vec4(clamp(surfColor, 0.0, 1.0), 1.0);
 }
 
@@ -1622,17 +1753,24 @@ void drawRockyPlanet() {
         waterCol += vec3(0.05, 0.07, 0.08) * smoothstep(0.62, 0.88, waveFine);
         waterCol += vec3(0.12, 0.16, 0.22) * pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 4.0);
 
-        baseColor    = mix(landCol, waterCol, waterMix);
-        roughness    = mix(0.92, mix(0.02, 0.18, waveFine), waterMix);  // tierra rugosa <-> oceano con brillo "centelleante"
+        // Hielo oceánico sobre texturas reales.
+        float oceanIce = clamp(uOceanIce, 0.0, 1.0);
 
-        // Mascara especular REAL: specMask (canal R de uSpecularMap) ya
-        // es ~0 sobre tierra/nubes y ~1 sobre oceano. Multiplicar
-        // directamente por specMask (en vez de partir de un piso 0.05)
-        // anula el brillo especular en tierra -- sin esto, el "punto de
-        // brillo" del Sol aparecia tambien sobre los continentes,
-        // dandoles un aspecto de "bola de billar de plastico". Solo el
-        // oceano refleja el punto brillante del Sol.
+        float earthCrackD = voronoi3(surfacePos * 24.0 + uSeed * 4.7);
+        float earthCracks = 1.0 - smoothstep(0.035, 0.085, earthCrackD);
+
+        float earthIceNoise = fbm5(surfacePos * 18.0 + uSeed * 2.1);
+        vec3 earthIceCol = mix(vec3(0.55, 0.72, 0.86), vec3(0.92, 0.97, 1.0), earthIceNoise);
+        earthIceCol = mix(earthIceCol, vec3(0.13, 0.23, 0.32), earthCracks * 0.65);
+
+        waterCol = mix(waterCol, earthIceCol, oceanIce);
+
+        baseColor = mix(landCol, waterCol, waterMix);
+        roughness = mix(0.92, mix(0.02, 0.18, waveFine), waterMix);
+        roughness = mix(roughness, 0.82, waterMix * oceanIce);
+
         specStrength = specMask * mix(1.0, 2.2, waveFine);
+        specStrength = mix(specStrength, 0.025, waterMix * oceanIce);
 
         // Relieve: perturbar la normal con el mapa de normales real
         // (de [0,1] a [-1,1]), para que las montanas proyecten sombreado
@@ -1643,9 +1781,27 @@ void drawRockyPlanet() {
         float wdx = fbm5(oceanPos + vec3(wD,0.0,0.0)) - fbm5(oceanPos - vec3(wD,0.0,0.0));
         float wdz = fbm5(oceanPos + vec3(0.0,0.0,wD)) - fbm5(oceanPos - vec3(0.0,0.0,wD));
         vec3 waveN = normalize(N + T * wdx * 1.5 + B * wdz * 1.5);
+        vec3 landNf = normalize(mix(N, mapN, 0.7));
 
-        vec3 landNf  = normalize(mix(N, mapN,  0.7));
-        vec3 waterNf = normalize(mix(N, waveN, 0.6));
+        vec3 waterNfLiquid = normalize(mix(N, waveN, 0.6));
+
+        // Normal de hielo oceánico: quieta, quebrada, con grietas.
+        const float EARTH_ICE_BUMP_EPS = 0.006;
+        vec3 eIT = normalize(surfacePos + Ts * EARTH_ICE_BUMP_EPS);
+        vec3 eIB = normalize(surfacePos + Bs * EARTH_ICE_BUMP_EPS);
+
+        float earthIceH = fbm5(surfacePos * 20.0 + uSeed * 3.3) * 0.030
+                        - earthCracks * 0.040;
+
+        float earthIceHT = fbm5(eIT * 20.0 + uSeed * 3.3) * 0.030
+                        - (1.0 - smoothstep(0.035, 0.085, voronoi3(eIT * 24.0 + uSeed * 4.7))) * 0.040;
+
+        float earthIceHB = fbm5(eIB * 20.0 + uSeed * 3.3) * 0.030
+                        - (1.0 - smoothstep(0.035, 0.085, voronoi3(eIB * 24.0 + uSeed * 4.7))) * 0.040;
+
+        vec3 waterNfIce = normalize(N - (T * (earthIceHT - earthIceH) + B * (earthIceHB - earthIceH)) * 8.0);
+
+        vec3 waterNf = normalize(mix(waterNfLiquid, waterNfIce, oceanIce));
         Nf = normalize(mix(landNf, waterNf, waterMix));
 
         // Pendiente del crater matematico (diferencias finitas de
@@ -1669,7 +1825,7 @@ void drawRockyPlanet() {
         // hacia arriba" localmente en una esfera) y la cubre de espuma
         // -- limitado a celdas de agua (waterMix) para no afectar tierra.
         if (fuerzaTsunami > 0.001) {
-            float tsunamiHere = fuerzaTsunami * waterMix;
+            float tsunamiHere = fuerzaTsunami * waterMix * (1.0 - oceanIce);
             Nf = normalize(mix(Nf, N, tsunamiHere));
             baseColor = mix(baseColor, vec3(0.85, 0.88, 0.92), tsunamiHere * 0.6);
         }
@@ -1689,15 +1845,54 @@ void drawRockyPlanet() {
         isWater = (uWaterLevel > 0.0) && (height < uWaterLevel + fuerzaTsunami * TSUNAMI_WAVE_HEIGHT);
 
         if (isWater) {
-            baseColor    = uColorWater;
-            roughness    = 0.05;   // agua liquida: baja rugosidad...
-            specStrength = 0.01;   // ...pero SIN brillo especular (ver nota mas abajo)
+            float oceanIce = clamp(uOceanIce, 0.0, 1.0);
 
-            // Oleaje violento del tsunami: la superficie se aplana
-            // hacia su normal de reposo (N) y se cubre de espuma.
+            vec3 liquidCol = uColorWater;
+
+            // Placas y variacion del hielo oceánico.
+            float iceNoise   = fbm5(surfacePos * 18.0 + uSeed * 2.1);
+            float plateNoise = fbm3(surfacePos * 5.0  + uSeed * 6.4);
+
+            // Grietas finas tipo banquisa usando Voronoi.
+            float crackD = voronoi3(surfacePos * 22.0 + uSeed * 4.7);
+            float cracks = 1.0 - smoothstep(0.035, 0.085, crackD);
+
+            vec3 iceDeep = vec3(0.42, 0.62, 0.78);
+            vec3 iceBase = vec3(0.72, 0.84, 0.92);
+            vec3 iceHigh = vec3(0.92, 0.97, 1.00);
+
+            vec3 iceCol = mix(iceDeep, iceBase, plateNoise);
+            iceCol = mix(iceCol, iceHigh, smoothstep(0.55, 0.90, iceNoise));
+            iceCol = mix(iceCol, vec3(0.12, 0.22, 0.30), cracks * 0.65);
+
+            baseColor = mix(liquidCol, iceCol, oceanIce);
+
+            // Agua liquida = lisa; hielo = mate/rugoso.
+            roughness    = mix(0.05, 0.82, oceanIce);
+            specStrength = mix(0.01, 0.025, oceanIce);
+
+            // Bump de hielo: placas elevadas + grietas hundidas.
+            const float ICE_BUMP_EPS = 0.006;
+            vec3 iT = normalize(surfacePos + Ts * ICE_BUMP_EPS);
+            vec3 iB = normalize(surfacePos + Bs * ICE_BUMP_EPS);
+
+            float iceH  = fbm5(surfacePos * 20.0 + uSeed * 3.3) * 0.035
+                        - cracks * 0.045;
+
+            float iceHT = fbm5(iT * 20.0 + uSeed * 3.3) * 0.035
+                        - (1.0 - smoothstep(0.035, 0.085, voronoi3(iT * 22.0 + uSeed * 4.7))) * 0.045;
+
+            float iceHB = fbm5(iB * 20.0 + uSeed * 3.3) * 0.035
+                        - (1.0 - smoothstep(0.035, 0.085, voronoi3(iB * 22.0 + uSeed * 4.7))) * 0.045;
+
+            vec3 iceN = normalize(N - (T * (iceHT - iceH) + B * (iceHB - iceH)) * 8.0);
+            Nf = normalize(mix(Nf, iceN, oceanIce));
+
+            // Tsunami: si hay hielo, afecta menos al oleaje visual.
             if (fuerzaTsunami > 0.001) {
-                Nf = normalize(mix(Nf, N, fuerzaTsunami));
-                baseColor = mix(baseColor, vec3(0.85, 0.88, 0.92), fuerzaTsunami * 0.6);
+                float tsunamiOnLiquid = fuerzaTsunami * (1.0 - oceanIce);
+                Nf = normalize(mix(Nf, N, tsunamiOnLiquid));
+                baseColor = mix(baseColor, vec3(0.85, 0.88, 0.92), tsunamiOnLiquid * 0.6);
             }
         } else {
             float t = clamp((height - uWaterLevel) / max(1e-3, 1.0 - uWaterLevel), 0.0, 1.0);
@@ -1915,9 +2110,36 @@ void drawRockyPlanet() {
         ? smoothstep(iceThreshold, iceThreshold + 0.16, abs(pos3D.y) + height * 0.12) * (1.0 - globalMagma)
         : 0.0;
     if (polarIce > 0.001) {
-        baseColor    = mix(baseColor, vec3(1.0), polarIce);
-        roughness    = mix(roughness, 0.85, polarIce); // hielo mate
-        specStrength = mix(specStrength, 0.05, polarIce);
+        float snowNoise = fbm5(surfacePos * 35.0 + uSeed * 8.1);
+        float glacierFlow = ridgedFbm5(surfacePos * 9.0 + uSeed * 11.3);
+
+        vec3 snowCol    = vec3(0.94, 0.96, 0.98);
+        vec3 blueGlace  = vec3(0.68, 0.82, 0.92);
+        vec3 dirtySnow  = vec3(0.72, 0.74, 0.72);
+
+        vec3 polarCol = mix(blueGlace, snowCol, snowNoise);
+        polarCol = mix(polarCol, dirtySnow, smoothstep(0.55, 0.88, glacierFlow) * 0.25);
+
+        baseColor    = mix(baseColor, polarCol, polarIce);
+        roughness    = mix(roughness, 0.92, polarIce);
+        specStrength = mix(specStrength, 0.025, polarIce);
+        aoFactor     = mix(aoFactor, aoFactor * mix(0.92, 1.08, snowNoise), polarIce);
+        // Bump glaciar suave para casquetes polares.
+        const float POLAR_BUMP_EPS = 0.006;
+        vec3 pIT = normalize(surfacePos + Ts * POLAR_BUMP_EPS);
+        vec3 pIB = normalize(surfacePos + Bs * POLAR_BUMP_EPS);
+
+        float polarH  = fbm5(surfacePos * 28.0 + uSeed * 9.1) * 0.020
+                    + ridgedFbm5(surfacePos * 7.0 + uSeed * 12.4) * 0.018;
+
+        float polarHT = fbm5(pIT * 28.0 + uSeed * 9.1) * 0.020
+                    + ridgedFbm5(pIT * 7.0 + uSeed * 12.4) * 0.018;
+
+        float polarHB = fbm5(pIB * 28.0 + uSeed * 9.1) * 0.020
+                    + ridgedFbm5(pIB * 7.0 + uSeed * 12.4) * 0.018;
+
+        vec3 polarN = normalize(N - (T * (polarHT - polarH) + B * (polarHB - polarH)) * 5.0);
+        Nf = normalize(mix(Nf, polarN, polarIce));
     }
 
     // ── 4. SOMBRA DE NUBES SOBRE EL TERRENO ─────────────────────
@@ -2341,14 +2563,107 @@ void main() {
 // ── Shader de llamaradas solares (ribbon arch mesh, basado en tutorial Blender) ──────
 static const char* FLARE_VERT_SRC = R"GLSL(
 #version 330
+
 in vec3 vertexPosition;
-in vec2 texcoord0;
+in vec2 vertexTexCoord;
+
 out vec2 fragUV;
+
 uniform mat4 mvp;
-void main() {
-    fragUV      = texcoord0;
-    gl_Position = mvp * vec4(vertexPosition, 1.0);
+
+// Multiplica SOLO la altura radial del arco, no su punto de anclaje.
+uniform float flareHeightMult;
+uniform float flareMode;   // 0=arco, 1=jet/pluma, 2=erupcion fallida/puff
+uniform float flareAsym;   // asimetria lateral/altura
+uniform float flareBurst;  // intensidad de explosion/caos
+
+const float BASE_R = 1.0;
+
+// Proyecta una geometría local con eje radial +Z sobre una esfera
+// de radio shellR. Esto garantiza length(pos) == shellR aunque
+// haya anchura lateral en X/Y.
+vec3 projectRadialShell(vec3 p, float shellR) {
+    float lateral2 = dot(p.xy, p.xy);
+    float z = sqrt(max(shellR * shellR - lateral2, 0.000001));
+    return vec3(p.x, p.y, z);
 }
+
+void main() {
+    fragUV = vertexTexCoord;
+    float t = vertexTexCoord.x;
+
+    // Modo 0: arco clásico/ribbon.
+    if (flareMode < 0.5) {
+        vec2 xz = vertexPosition.xz;
+        float radial = length(xz);
+        float phi = atan(xz.x, xz.y);
+
+        vec2 dir = vec2(sin(phi), cos(phi));
+        float extra = max(radial - BASE_R, 0.0);
+
+        // shellR es el RADIO ESFÉRICO real deseado.
+        float shellR = BASE_R + extra * flareHeightMult;
+
+        // Corrige el radio XZ para que sqrt(xz^2 + y^2) == shellR.
+        float y = vertexPosition.y;
+        float correctedRadial = sqrt(max(shellR * shellR - y * y, 0.000001));
+
+        float side = vertexTexCoord.y - 0.5;
+        float twist = sin(t * 11.0 + flareAsym * 31.0) * side * 0.035 * flareBurst;
+        float cs = cos(twist);
+        float sn = sin(twist);
+
+        vec3 pos = vec3(dir.x * correctedRadial, y, dir.y * correctedRadial);
+
+        // Twist alrededor del eje radial/estrella. Mantiene distancia.
+        pos.xz = vec2(pos.x * cs - pos.z * sn, pos.x * sn + pos.z * cs);
+
+        gl_Position = mvp * vec4(pos, 1.0);
+        return;
+    }
+
+    // Modo 1 y 2: geometría real no-ribbon.
+    vec3 pos = vertexPosition;
+
+    // En estas mallas, pos.z representa el radio-shell base antes de corregir
+    // por anchura lateral. shellR será el radio real final.
+    float extra = max(pos.z - BASE_R, 0.0);
+    float shellR = BASE_R;
+
+    if (flareMode < 1.5) {
+        // Jet: alarga radialmente.
+        shellR = BASE_R + extra * flareHeightMult;
+
+        // Turbulencia lateral, pero la proyección posterior mantiene
+        // la base pegada al radio real de la estrella.
+        float wob = sin(t * 21.0 + flareAsym * 17.0) * 0.06 * flareBurst;
+        pos.x += pos.x * wob;
+        pos.y += pos.y * wob;
+    }
+    else {
+        // Puff / erupción fallida:
+        // grande, abierta y filamentosa; NO una bola/hongo.
+        shellR = BASE_R + extra * flareHeightMult;
+
+        float fan = smoothstep(0.05, 0.75, t);
+
+        // Aplastar el volumen para que lea como abanico de plasma.
+        pos.y *= mix(0.72, 0.48, fan);
+
+        // Ligero estiramiento lateral, no expansión radial tipo explosión.
+        pos.x *= 1.0 + fan * flareBurst * 0.16;
+
+        // Pequeño desgarro lateral animado por forma, no por tiempo:
+        // estable durante el evento, sin parpadeo.
+        pos.x += sin(t * 17.0 + flareAsym * 9.0) * 0.025 * flareBurst * fan;
+        pos.y += sin(t * 11.0 + flareAsym * 13.0) * 0.012 * flareBurst * fan;
+    }
+
+    pos = projectRadialShell(pos, shellR);
+
+    gl_Position = mvp * vec4(pos, 1.0);
+}
+
 )GLSL";
 
 static const char* FLARE_FRAG_SRC = R"GLSL(
@@ -2361,6 +2676,16 @@ uniform float temp;
 uniform float stellarActivity;
 uniform float flareIndex;
 uniform float flareGrow;    // 0=nada visible, 1=arco completo (revelado progresivo)
+
+uniform float flareFade;
+
+uniform float flareMode;
+uniform float flareAsym;
+uniform float flareBurst;
+
+float invSmooth(float hi, float lo, float x) {
+    return 1.0 - smoothstep(lo, hi, x);
+}
 
 // ── Hash / valor aleatorio 2D ─────────────────────────────────
 float fh(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5); }
@@ -2390,10 +2715,19 @@ vec3 flareCol(float t, float tK) {
 
 void main() {
     vec2  uv  = fragUV;   // uv.x = a lo largo del arco (0→1), uv.y = ancho de cinta (0→1)
-    float act = clamp(stellarActivity, 0.1, 1.0);
 
-    // Tutorial: velocidad de animacion proporcional a temperatura
-    float spd  = mix(0.4, 2.5, clamp((temp - 3000.0) / 27000.0, 0.0, 1.0));
+    float mDwarf = 1.0 - smoothstep(3400.0, 4100.0, temp);
+    float kDwarf = smoothstep(3800.0, 4800.0, temp) * (1.0 - smoothstep(5100.0, 5600.0, temp));
+    float gDwarf = smoothstep(5200.0, 5600.0, temp) * (1.0 - smoothstep(6100.0, 6600.0, temp));
+
+    float spectralAct = clamp(stellarActivity * (1.0 + mDwarf * 1.7 + kDwarf * 0.55 - gDwarf * 0.35), 0.02, 1.0);
+    float act = spectralAct;
+
+    // M/K frías: llamaradas más vivas y más “gruesas”; G: más tranquilas.
+    float spd = mix(0.45, 2.2, clamp((temp - 2800.0) / 24000.0, 0.0, 1.0));
+    spd *= mix(1.0, 1.65, mDwarf);
+    spd *= mix(1.0, 0.78, gDwarf);
+
     // Tutorial: variacion por posicion de objeto (empty node) → seed por llamarada
     float seed = flareIndex * 1.618 + 0.31;
 
@@ -2412,9 +2746,39 @@ void main() {
     float erosion = fbm3(p * 5.8 + vec2(seed * 3.1, W * 1.5)) * 0.38;
     float fireVal = clamp((fine - erosion * 0.55) * 1.5, 0.0, 1.0);
 
-    // Factor de altura en el arco: 0 en los pies, 1 en la cima
-    float archT   = sin(3.14159265 * uv.x);
-    float heightF = archT * archT;
+    // Mascaras duras: flareMode llega como 0, 1 o 2 desde C++.
+    // Esto evita que los modos se mezclen visualmente y parezcan todos iguales.
+    float archMask = 1.0 - step(0.5, abs(flareMode - 0.0));
+    float jetMask  = 1.0 - step(0.5, abs(flareMode - 1.0));
+    float puffMask = 1.0 - step(0.5, abs(flareMode - 2.0));
+
+    // Perfil visual por modo.
+    // Arco: sube y baja.
+    // Jet: crece hacia la punta.
+    // Puff: máximo cerca de la explosión, no en el centro del arco.
+    float archT = sin(3.14159265 * uv.x);
+    float archHeightF = archT * archT;
+
+    float burstCenterForHeight = mix(0.30, 0.62, flareAsym);
+    float jetHeightF  = pow(clamp(uv.x, 0.0, 1.0), 0.85);
+    float puffHeightF = exp(-pow((uv.x - burstCenterForHeight) / 0.22, 2.0));
+
+    float heightF =
+        archHeightF * archMask +
+        jetHeightF  * jetMask +
+        puffHeightF * puffMask;
+
+    // Footpoints: manchas calientes donde nace/termina la llamarada.
+    // En jets solo domina el pie izquierdo; en arcos se ven ambos pies.
+    float footA = exp(-pow(uv.x / 0.055, 2.0));
+    float footB = exp(-pow((1.0 - uv.x) / 0.055, 2.0));
+    float footMask = mix(footA + footB, footA, jetMask);
+    footMask = mix(footMask, footA * 1.25, puffMask);
+
+    // Explosion interna para erupciones fallidas.
+    float burstCenter = mix(0.30, 0.62, flareAsym);
+    float burstBlob = exp(-pow((uv.x - burstCenter) / mix(0.12, 0.24, flareBurst), 2.0));
+    burstBlob *= smoothstep(0.02, 0.35, uv.y) * smoothstep(0.02, 0.35, 1.0 - uv.y);
 
     // Color: frio/H-alpha en pies, caliente y brillante en la cima
     vec3 col = mix(flareCol(fireVal * 0.65, temp * 0.74),
@@ -2422,14 +2786,24 @@ void main() {
                    heightF);
 
     // Emision HDR para que el bloom la capture bien
-    col *= (2.8 + act * 2.2) * (0.38 + heightF * 0.85);
+    float flareScale = 1.0 + mDwarf * 1.6 + kDwarf * 0.45 - gDwarf * 0.25;
+    col *= (2.4 + act * 3.2 * flareScale) * (0.32 + heightF * (0.85 + mDwarf * 0.55));
 
     // Bordes mas estrechos para arcos mas finos e irregulares
     float eL  = smoothstep(0.0, 0.13, uv.x);
     float eR  = smoothstep(0.0, 0.13, 1.0 - uv.x);
     float eY0 = smoothstep(0.0, 0.10, uv.y);
     float eY1 = smoothstep(0.0, 0.12, 1.0 - uv.y);
-    float edgeMask = eL * eR * eY0 * eY1;
+    float ribbonEdgeMask = eL * eR * eY0 * eY1;
+
+    // En mallas tubulares/blob, UV.y es ángulo alrededor del volumen,
+    // no “ancho de cinta”; no queremos borde rectangular de ribbon.
+    float volumeEdgeMask = eL * eR;
+
+    float edgeMask =
+        ribbonEdgeMask * archMask +
+        volumeEdgeMask * jetMask +
+        volumeEdgeMask * puffMask;
 
     // Umbral mas alto + erosion para bordes irregulares/flameantes
     float noiseAlpha = smoothstep(0.28, 0.68, fine - erosion);
@@ -2438,16 +2812,78 @@ void main() {
     // UV.x > flareGrow = region aun no formada, se descarta
     if (uv.x > flareGrow) discard;
     // Punta del arco: borde frontal suavizado para simular plasma activo avanzando
+
     float tipFade = (flareGrow >= 1.0)
                     ? 1.0
-                    : smoothstep(flareGrow, max(0.0, flareGrow - 0.12), uv.x);
-    float alpha = noiseAlpha * edgeMask * act * tipFade;
+                    : invSmooth(flareGrow, max(0.0, flareGrow - 0.12), uv.x);
+
+    float widthBoost = 1.0 + mDwarf * 0.65 + kDwarf * 0.20;
+    // Jets: se erosionan mas hacia la punta, como material expulsado/deshilachado.
+    float jetTipFade = mix(1.0, 1.0 - smoothstep(0.72, 1.0, uv.x) * 0.45, jetMask);
+
+    // Failed eruption: no forma arco completo; se corta despues de la burbuja.
+    float puffCut = mix(
+        1.0,
+        1.0 - smoothstep(burstCenter + 0.10, burstCenter + 0.22, uv.x),
+        puffMask
+    );
+
+    if (puffMask > 0.5 && uv.x > burstCenter + 0.30) discard;
+
+    // Romper zonas internas para que no sea una cinta constante.
+    float holesFreqY = mix(7.0, 2.5, max(jetMask, puffMask));
+    float holes = fbm4(vec2(uv.x * 9.0 + seed, uv.y * holesFreqY + realTime * 0.35));
+    float holeMask = mix(1.0, smoothstep(0.18, 0.72, holes), 0.28 + flareBurst * 0.22);
+
+    // La base debe brillar aunque el ruido principal sea bajo.
+    float footAlpha = footMask * (0.45 + act * 0.75) * (0.65 + flareBurst * 0.45);
+
+    // La explosion fallida tiene cuerpo propio.
+    float burstAlpha = burstBlob * puffMask * (0.18 + flareBurst * 0.22);
+
+    // Los arcos regulares necesitan cuerpo visible propio.
+    // Antes dependían demasiado de noiseAlpha*act, y en estrellas tipo Sol
+    // quedaban casi invisibles comparados con jets/puffs.
+    float archCenterMask =
+        smoothstep(0.04, 0.22, uv.y) *
+        smoothstep(0.04, 0.22, 1.0 - uv.y);
+
+    float archBodyAlpha =
+        archMask *
+        archHeightF *
+        archCenterMask *
+        (0.18 + act * 0.35 + gDwarf * 0.28);
+
+    // Boost SOLO para arcos. Jets/puffs ya tenían bastante presencia.
+    float archVisibilityBoost = 1.0 + archMask * (0.70 + gDwarf * 1.05);
+
+    float alpha =
+        (noiseAlpha * edgeMask * act * tipFade * widthBoost * jetTipFade * puffCut * holeMask * archVisibilityBoost)
+        + footAlpha
+        + burstAlpha
+        + archBodyAlpha;
 
     // Brillo extra en la base del arco (plasma mas denso junto a la cromosfera)
-    float baseGlow = smoothstep(0.5, 0.0, archT) * 0.80;
+    // Manchas calientes en los pies: H-alpha/amarillo/blanco segun temperatura.
+    vec3 footCol = flareCol(0.92, temp * mix(0.85, 1.25, act)) * (1.5 + flareBurst * 1.4);
+    col += footCol * footMask * (1.2 + act * 2.0);
+
+    // Cuerpo del arco clásico: visible en G/Sol sin convertirlo en foco nuclear.
+    vec3 archCoreCol = flareCol(0.95, temp) * (1.0 + gDwarf * 1.35);
+    col += archCoreCol * archBodyAlpha;
+
+    // Nucleo explosivo para erupciones que no completan loop.
+    vec3 burstCol = flareCol(0.85, temp * 1.10) * (0.65 + flareBurst * 0.75);
+    col += burstCol * burstBlob * puffMask;
+
+    // Base densa cromosferica.
+    float baseGlow = footMask * 0.85;
     col += col * baseGlow;
 
-    if (alpha < 0.006) discard;
+    alpha *= flareFade;
+        col   *= mix(0.35, 1.0, flareFade);
+
+    if (alpha < 0.010) discard;
     finalColor = vec4(col, alpha);
 }
 )GLSL";
