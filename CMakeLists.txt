@@ -75,6 +75,14 @@ file(GLOB GRITADOR_ASSETS
     "${CMAKE_SOURCE_DIR}/*.tga"
 )
 
+# Skybox del agujero negro (6 caras separadas) y textura de disco de acrecion
+add_custom_command(TARGET gritador_universe POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_SOURCE_DIR}/skybox_nebula_dark"
+        "$<TARGET_FILE_DIR:gritador_universe>/skybox_nebula_dark"
+    COMMENT "Copiando skybox_nebula_dark junto al ejecutable"
+)
+
 if(GRITADOR_ASSETS)
     add_custom_command(TARGET gritador_universe POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different

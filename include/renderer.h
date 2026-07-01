@@ -12,6 +12,7 @@
 #include "constants.h"
 #include "math_utils.h"
 #include "textures.h"
+#include "stellar_evolution.h"
 
 // ============================================================
 //  Sistema de renderizado
@@ -258,6 +259,11 @@ struct ShaderLocs {
     int stellarMass;
     int stellarActivity;
     int stellarLuminosity;
+    // Fase estelar: uniforms para drawStar() en el shader
+    int isGiantPhase;           // 1.0 si SUBGIANT/RED_GIANT/SUPERGIANT
+    int isSupernovaPhase;       // 1.0 si SUPERNOVA activa
+    int supernovaProgressLoc;   // 0→1 durante SUPERNOVA
+    int rotationCriticality;    // 0–1 (fracción velocidad de ruptura), gravity darkening
     // Gigantes gaseosos/helados (shader procedural multicapa)
     int isGasGiant;
     int ggBandCount, ggBandStrength, ggTurbulence, ggJetStream;
@@ -316,9 +322,13 @@ inline ShaderLocs GetShaderLocs(Shader& shader) {
     locs.atmosColor       = GetShaderLocation(shader, "atmosphereColor");
     locs.atmosFalloff     = GetShaderLocation(shader, "uAtmosphereFalloff");
     locs.spinPhase        = GetShaderLocation(shader, "spinPhase");
-    locs.stellarMass      = GetShaderLocation(shader, "stellarMass");
-    locs.stellarActivity  = GetShaderLocation(shader, "stellarActivity");
-    locs.stellarLuminosity= GetShaderLocation(shader, "stellarLuminosity");
+    locs.stellarMass         = GetShaderLocation(shader, "stellarMass");
+    locs.stellarActivity     = GetShaderLocation(shader, "stellarActivity");
+    locs.stellarLuminosity   = GetShaderLocation(shader, "stellarLuminosity");
+    locs.isGiantPhase        = GetShaderLocation(shader, "isGiantPhase");
+    locs.isSupernovaPhase    = GetShaderLocation(shader, "isSupernovaPhase");
+    locs.supernovaProgressLoc= GetShaderLocation(shader, "supernovaProgress");
+    locs.rotationCriticality = GetShaderLocation(shader, "rotationCriticality");
 
     // Gigantes gaseosos/helados
     locs.isGasGiant        = GetShaderLocation(shader, "isGasGiant");
@@ -673,7 +683,16 @@ inline void UploadBodyUniforms(Shader& shader, const ShaderLocs& locs, const Bod
     // sin cambio visual). Crece linealmente hasta MAX_DEFORM por debajo de ese
     // radio -- ver derivaciones de DIFFERENTIATION_RADIUS (constants.h, Ceres/
     // Vesta) y MAX_DEFORM (Vesta/Hyperion, constants.h) arriba.
-    float potatoFactor = ClampF(1.0f - (float)(b.radius / DIFFERENTIATION_RADIUS), 0.0f, 1.0f);
+    // EXCEPCION: estrellas (isStar=true), incluyendo estrellas de neutrones,
+    // pulsares y magnetares. Sin importar lo pequenas que sean, la presion de
+    // degeneracion/gravedad las mantiene perfectamente esfericas -- una NS de
+    // 12km es el objeto mas esferico del universo (desviacion < 1mm del radio).
+    // El chequeo de radio sin esta excepcion daba potatoFactor=0.97 al Crab
+    // Pulsar (12km << DIFFERENTIATION_RADIUS=400km), deformandolo como un
+    // asteroide irregular al maximo.
+    float potatoFactor = b.isStar
+                       ? 0.0f
+                       : ClampF(1.0f - (float)(b.radius / DIFFERENTIATION_RADIUS), 0.0f, 1.0f);
     float potatoAmp    = potatoFactor * MAX_DEFORM;
     SetShaderValue(shader, locs.potatoAmp, &potatoAmp, SHADER_UNIFORM_FLOAT);
 
@@ -708,6 +727,28 @@ inline void UploadBodyUniforms(Shader& shader, const ShaderLocs& locs, const Bod
         SetShaderValue(shader, locs.stellarMass,       &mass, SHADER_UNIFORM_FLOAT);
         SetShaderValue(shader, locs.stellarActivity,   &act,  SHADER_UNIFORM_FLOAT);
         SetShaderValue(shader, locs.stellarLuminosity, &lum,  SHADER_UNIFORM_FLOAT);
+
+        // Fase estelar para drawStar() en el shader.
+        // CONTINUO segun cuanto ha crecido el radio respecto a su tamano de
+        // secuencia principal (b.radius YA converge gradualmente en
+        // ApplyStellarPhaseProperties, ver stellar_evolution.h) -- antes era
+        // un booleano atado directo al enum de fase, que cambiaba DE GOLPE
+        // en el instante de la transicion aunque el radio/luminosidad
+        // tardaran minutos/horas simulados en alcanzar el tamano de gigante;
+        // el corona/cromosfera "modo gigante" aparecia antes de que la
+        // estrella realmente se hubiera inflado. Ahora sigue al tamano real.
+        double mRatioVis = std::max(0.08, b.initialStellarMass / M_SUN);
+        double msRadiusVis = R_SUN * std::pow(mRatioVis, 0.8);
+        float radiusRatioVis = (float)(b.radius / std::max(1.0, msRadiusVis));
+        float giantT = std::clamp((radiusRatioVis - 1.8f) / (6.0f - 1.8f), 0.0f, 1.0f);
+        float isGiant = giantT * giantT * (3.0f - 2.0f * giantT);
+        float isSupernova = (b.stellarPhase == StellarPhase::SUPERNOVA) ? 1.0f : 0.0f;
+        float snProgress  = (float)b.supernovaProgress;
+        float rotCrit     = b.criticalRotationFraction;
+        SetShaderValue(shader, locs.isGiantPhase,        &isGiant,     SHADER_UNIFORM_FLOAT);
+        SetShaderValue(shader, locs.isSupernovaPhase,    &isSupernova, SHADER_UNIFORM_FLOAT);
+        SetShaderValue(shader, locs.supernovaProgressLoc,&snProgress,  SHADER_UNIFORM_FLOAT);
+        SetShaderValue(shader, locs.rotationCriticality, &rotCrit,     SHADER_UNIFORM_FLOAT);
     }
 
     int isGasGiantVal = b.isGasGiant ? 1 : 0;
@@ -968,7 +1009,11 @@ inline void DrawBody(Body& b, const Camera3D& camera, const std::vector<Body>& b
                       int selectedBodyIdx, int bodyIndex, bool paused,
                       Shader& shader, const ShaderLocs& locs)
 {
-    if (b.mass <= 0.0) return;
+    // Saltar cuerpos marcados para eliminar (mass=-1.0 es señal interna),
+    // cuerpos muertos normales (mass=0 sin isSupernovaRemnant) — los remanentes
+    // con mass=0 e isSupernovaRemnant=true sí se renderizan (su shell expansiva).
+    if (b.mass < 0.0) return;
+    if (b.mass == 0.0 && !b.isSupernovaRemnant) return;
 
     const Vector3 p  = ToDrawPos(b.pos);
     float rR = (float)(b.radius * RENDER_SCALE);
@@ -985,11 +1030,37 @@ inline void DrawBody(Body& b, const Camera3D& camera, const std::vector<Body>& b
         b.cloudRotation += 0.7f * (float)(TIME_STEP / 1200.0);
     }
 
+    // --- REMANENTE DE SUPERNOVA: solo shell expansiva, sin geometría de estrella ---
+    if (b.isSupernovaRemnant) {
+        float shellRad = (float)(b.supernovaRadius * RENDER_SCALE);
+        double remnantFade = std::max(0.0, 1.0 - b.stellarPhaseAge / 3.156e7);
+        float alpha = (float)(remnantFade * 0.35);
+        if (shellRad > 0.001f && alpha > 0.001f) {
+            BeginBlendMode(BLEND_ADDITIVE);
+            rlDisableDepthMask();
+            DrawSphereEx(p, shellRad,        20, 20, Fade({255, 130,  50, 255}, alpha * 0.5f));
+            DrawSphereEx(p, shellRad * 0.75f, 18, 18, Fade({200, 220, 255, 255}, alpha * 0.3f));
+            DrawSphereEx(p, shellRad * 0.5f,  14, 14, Fade({255, 200, 120, 255}, alpha * 0.2f));
+            rlDrawRenderBatchActive();
+            rlEnableDepthMask();
+            EndBlendMode();
+        }
+        goto draw_overlay;
+    }
+
     // --- ESTRELLA: renderizado procedural completo ---
     if (b.isStar) {
-        float rad = std::max(0.001f, rR);
-        Vector3 scale   = { rad, rad, rad };
-        Vector3 rotAxis = { 0.0f, 1.0f, 0.0f };
+        // Para objetos compactos (NS, pulsar, magnetar) NO aplicar el piso
+        // de 0.001 draw-units: ese minimo visual existe para que las estrellas
+        // lejanas (Sol a distancia Pluton) sigan siendo visibles, pero para un
+        // pulsar (rR=0.00012) lo infla 8x respecto al radio fisico real,
+        // causando que la esfera visual sea mucho mayor que la hitbox de
+        // seleccion (que siempre usa el radio fisico sin piso).
+        float minRad = (b.stellarPhase == StellarPhase::PULSAR   ||
+                        b.stellarPhase == StellarPhase::MAGNETAR  ||
+                        b.stellarPhase == StellarPhase::NEUTRON_STAR)
+                       ? 0.0f : 0.001f;
+        float rad = std::max(minRad, rR);
 
         // Subir uniforms específicos de esta estrella
         UploadBodyUniforms(shader, locs, b);
@@ -999,11 +1070,36 @@ inline void DrawBody(Body& b, const Camera3D& camera, const std::vector<Body>& b
         planetModel.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture = blankTex;
         planetModel.materials[0].maps[MATERIAL_MAP_NORMAL].texture  = blankTex;
 
-        DrawModelEx(planetModel, p, rotAxis, b.rotationAngle, scale, dCol);
+        // Usar TidalBodyTransform: aplica deformación por mareas Y achatamiento
+        // por rotación (RotationalOblateness), igual que planetas.
+        DrawMesh(planetModel.meshes[0], planetModel.materials[0],
+                 TidalBodyTransform(p, rad, b.rotationAngle, b));
 
-        // Halo/corona aditivo
-        float lum = (float)(b.luminosity / L_SUN);
-        DrawStarHalo(p, rad, dCol, b.stellarActivity, lum, (float)b.temperature);
+        // Shell de supernova activa (SUPERNOVA en progreso)
+        if (b.supernovaProgress > 0.001 && b.stellarPhase == StellarPhase::SUPERNOVA) {
+            float shellRad = (float)(b.supernovaRadius * RENDER_SCALE);
+            float snAlpha  = (float)(SupernovaLightCurve(b.supernovaProgress) * 0.7);
+            if (shellRad > 0.001f && snAlpha > 0.001f) {
+                BeginBlendMode(BLEND_ADDITIVE);
+                rlDisableDepthMask();
+                DrawSphereEx(p, shellRad,        20, 20, Fade({255, 200,  80, 255}, snAlpha * 0.6f));
+                DrawSphereEx(p, shellRad * 0.7f, 18, 18, Fade({255, 255, 200, 255}, snAlpha * 0.4f));
+                DrawSphereEx(p, shellRad * 0.4f, 14, 14, Fade({200, 230, 255, 255}, snAlpha * 0.3f));
+                rlDrawRenderBatchActive();
+                rlEnableDepthMask();
+                EndBlendMode();
+            }
+        }
+
+        // Halo/corona aditivo — para TODOS los tipos de estrella incluyendo
+        // pulsares y magnetares. Los halos son efectos visuales aditivos
+        // semi-transparentes: NO afectan el hitbox de seleccion (que usa
+        // el radio fisico real). El tamaño visual correcto vs hitbox lo
+        // garantiza el fix del std::max(0.001f,rR) en la malla de arriba.
+        {
+            float lum = (float)(b.luminosity / L_SUN);
+            DrawStarHalo(p, rad, dCol, b.stellarActivity, lum, (float)b.temperature);
+        }
 
         goto draw_overlay;
     }
@@ -1153,10 +1249,103 @@ inline void DrawBody(Body& b, const Camera3D& camera, const std::vector<Body>& b
     DrawSphere(p, std::max(0.001f, rR), dCol);
 
 draw_overlay:
-    if (bodyIndex == selectedBodyIdx)
-        DrawCircle3D(p, rR * 1.4f, {0,1,0}, 0.0f, Fade(WHITE, 0.55f));
+    if (bodyIndex == selectedBodyIdx) {
+        // Billboard: DrawCircle3D (rmodels.c) dibuja el circulo en el
+        // plano XY (vertices (sin*r, cos*r, 0)) -- su normal por defecto
+        // es +Z, NO +Y -- y lo rota 'rotationAngle' grados alrededor de
+        // 'rotationAxis'. Sin esto, el aro de seleccion queda SIEMPRE en
+        // ese plano fijo del mundo, mostrando el borde de canto desde la
+        // mayoria de los angulos de camara en vez de la cara. Para que
+        // SIEMPRE muestre la cara a la camara (como un billboard), la
+        // normal objetivo es la direccion cuerpo->camara; se calcula el
+        // eje/angulo que rota +Z (el normal REAL por defecto) hacia esa
+        // normal objetivo.
+        Vector3 toCam = Vector3Subtract(camera.position, p);
+        Vector3 billboardNormal = (Vector3LengthSqr(toCam) > 1e-8f)
+            ? Vector3Normalize(toCam) : Vector3{0, 0, 1};
+        Vector3 billboardAxis = Vector3CrossProduct({0, 0, 1}, billboardNormal);
+        float   billboardDot  = ClampF(Vector3DotProduct({0, 0, 1}, billboardNormal), -1.0f, 1.0f);
+        float   billboardAngle = acosf(billboardDot) * RAD2DEG;
+        if (Vector3LengthSqr(billboardAxis) < 1e-8f) billboardAxis = {1, 0, 0}; // normal paralela a +-Z: cualquier eje sirve
+
+        DrawCircle3D(p, rR * 1.4f, billboardAxis, billboardAngle, Fade(WHITE, 0.55f));
+    }
     if (b.hasRings && bodyIndex == selectedBodyIdx)
         DrawCircle3D(p, rR * 3.2f, {1,0,0}, 90.0f, Fade(GetColor(0xaaaaaa88), 0.3f));
+}
+
+// ── Rotulos de nombre por cuerpo (texto 2D en espacio de pantalla) ──
+// Tamano proporcional al mismo "hitbox" de seleccion que usa PickBody
+// (camera_input.h): el radio en pixeles que ocuparia el radio FISICO real
+// del cuerpo, con un piso de 18px para que objetos lejanos/pequenos sigan
+// siendo identificables (ese piso es justamente lo que los hace
+// "clicables" tambien). Sin esto, un planeta visto de lejos es un punto
+// indistinguible de una luna o un asteroide -- el rotulo (que crece o se
+// achica con la MISMA logica que decide que tan facil es seleccionarlo)
+// resuelve eso de un vistazo. Se llama DESPUES de EndMode3D() (texto 2D,
+// no debe dibujarse dentro de BeginMode3D/EndMode3D). Excluye fragmentos
+// de colision (b.isFragment): mostrar el nombre de cada esquirla de un
+// cataclismo (potencialmente cientos) saturaria la pantalla sin aportar
+// nada -- el objetivo es identificar planetas/lunas/cuerpos del catalogo,
+// no escombros.
+//
+// Corte por cercania: el rotulo se usa para identificar cuerpos PEQUEÑOS
+// EN PANTALLA (de lejos, un punto indistinguible) -- de cerca, el cuerpo
+// ya se ve perfectamente (superficie, anillos, etc.) y el texto solo
+// estorba/tapa. 'screenR' SIN el piso de 18px (a diferencia de
+// 'hitboxR') es el radio aparente REAL: por debajo de
+// LABEL_HIDE_RADIUS_PX el rotulo esta a full opacidad, y se desvanece
+// linealmente hasta desaparecer del todo al llegar a ese radio (en vez de
+// un corte seco que "parpadee" al orbitar la camara justo en el limite).
+inline void DrawBodyNameLabels(const std::vector<Body>& bodies, const Camera3D& cam)
+{
+    constexpr float LABEL_HIDE_RADIUS_PX = 60.0f; // radio aparente (px) a partir del cual el rotulo desaparece
+    constexpr float LABEL_FADE_START_PX  = 40.0f; // empieza a desvanecerse antes del corte, no de golpe
+
+    Vector3 camFwd = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
+    int screenW = GetScreenWidth(), screenH = GetScreenHeight();
+
+    for (const Body& b : bodies) {
+        if (b.mass <= 0.0 || b.isFragment) continue;
+
+        Vector3 p = ToDrawPos(b.pos);
+        if (Vector3DotProduct(camFwd, Vector3Subtract(p, cam.position)) <= 0.0f) continue;
+
+        Vector2 sp = GetWorldToScreen(p, cam);
+        if (sp.x < -50 || sp.x > screenW + 50 || sp.y < -50 || sp.y > screenH + 50) continue;
+
+        // Radio proyectado en pixeles usando el radio fisico real
+        // (SIN el std::max(0.01,...) que inflaba pulsares/NS x83).
+        // Para objetos sub-pixel (pulsares, NS, BH) screenR ≈ 0: se
+        // fuerza alpha=1 y se muestra siempre la etiqueta, porque el
+        // cuerpo es demasiado pequeño para verse sin ella.
+        Vector2 sp2 = GetWorldToScreen(
+            Vector3Add(p, {(float)(b.radius * RENDER_SCALE), 0.f, 0.f}), cam);
+        float screenR = Vector2Distance(sp, sp2);
+        if (screenR >= LABEL_HIDE_RADIUS_PX) continue; // demasiado grande en pantalla
+
+        // Si el cuerpo es sub-pixel (< 3px de radio), forzar alpha=1:
+        // el jugador no puede verlo sin la etiqueta.
+        float alpha;
+        if (screenR < 3.0f) {
+            alpha = 1.0f;
+        } else {
+            alpha = 1.0f - ClampF(
+                (screenR - LABEL_FADE_START_PX) / (LABEL_HIDE_RADIUS_PX - LABEL_FADE_START_PX),
+                0.0f, 1.0f);
+        }
+
+        float hitboxR = std::max(18.0f, screenR);
+        int fontSize = (int)ClampF(hitboxR * 0.55f, 12.0f, 42.0f);
+        const char* name = b.name.c_str();
+        int textW = MeasureText(name, fontSize);
+
+        int tx = (int)sp.x - textW / 2;
+        int ty = (int)sp.y + (int)(fontSize * 0.8f) + 6;
+
+        DrawText(name, tx + 1, ty + 1, fontSize, Fade(BLACK, 0.7f * alpha));
+        DrawText(name, tx,     ty,     fontSize, Fade(RAYWHITE, alpha));
+    }
 }
 
 // ── Locs del shader de escombros instanciados (ROCK_INSTANCE_*_SRC) ──
@@ -1165,6 +1354,9 @@ struct RockShaderLocs {
     int baseColor;
     int ambientStrength;
     int lightIntensity;
+    int viewPos;
+    int shadowFactor;
+    int translucency;
 };
 
 inline RockShaderLocs GetRockShaderLocs(Shader& sh) {
@@ -1177,6 +1369,9 @@ inline RockShaderLocs GetRockShaderLocs(Shader& sh) {
     l.baseColor         = GetShaderLocation(sh, "uBaseColor");
     l.ambientStrength   = GetShaderLocation(sh, "uAmbientStrength");
     l.lightIntensity    = GetShaderLocation(sh, "uLightIntensity");
+    l.viewPos           = GetShaderLocation(sh, "uViewPos");
+    l.shadowFactor      = GetShaderLocation(sh, "uShadowFactor");
+    l.translucency      = GetShaderLocation(sh, "uTranslucency");
     return l;
 }
 
@@ -1296,19 +1491,54 @@ inline void DrawDustField3D(const std::vector<DustParticle>& dust,
     // uLightDir) es compartido por todo un DrawMeshInstanced, asi que cada
     // combinacion distinta necesita su propio lote/draw call. 'hostKey' es
     // el Body::id del planeta duenio (~0ull = sin host, polvo de colision o
-    // anillo huerfano) y 'shadow' marca particulas de anillo eclipsadas por
-    // su propio planeta. 'groups' es estatico para conservar la capacidad
-    // de los vectores de matrices entre frames (evita reallocs con decenas
-    // de miles de particulas).
-    struct ColorGroup { Color color; bool shadow; uint64_t hostKey; std::vector<Matrix> transforms; };
+    // anillo huerfano) y 'shadowBucket' cuantiza la fraccion de luz directa
+    // que SI llega (penumbra suave, ver mas abajo) en SHADOW_BUCKET_COUNT
+    // niveles -- un entero, no un bool, para poder degradar el termino
+    // difuso/especular de forma gradual en vez de un corte binario
+    // luz/sombra. 'groups' es estatico para conservar la capacidad de los
+    // vectores de matrices entre frames (evita reallocs con decenas de
+    // miles de particulas).
+    struct ColorGroup { Color color; int shadowBucket; uint64_t hostKey; bool isRing; std::vector<Matrix> transforms; };
     static std::vector<ColorGroup> groups;
     for (ColorGroup& g : groups) g.transforms.clear();
 
     constexpr uint64_t NO_HOST = ~0ull;
+    constexpr int SHADOW_BUCKET_COUNT = 4; // niveles de penumbra (0=eclipsado..N=luz plena)
+
+    // Tono de escombro neutro hacia el que se desvanece el color de banda
+    // original cuando una particula de anillo se aleja mucho de la
+    // distancia a la que nacio (ver DustParticle::spawnRadiusFromHost,
+    // body.h) -- sin esto, un anillo realmente disgregado por un
+    // sobrevuelo cercano (ver UpdateDustGravity, physics.h) sigue pintado
+    // exactamente con el mismo material/banda de siempre, y de lejos
+    // parece "el mismo Saturno" aunque las posiciones ya no tengan nada
+    // que ver con un disco ordenado.
+    constexpr Color DEBRIS_TINT_COLOR = {120, 112, 102, 255};
+    constexpr int    DRIFT_BUCKET_COUNT = 4;
 
     for (const DustParticle& d : dust) {
         if (!d.active) continue;
         Color key = d.isRing ? d.color : DEFAULT_DUST_COLOR;
+
+        if (d.isRing && d.spawnRadiusFromHost > 1.0f) {
+            double curR = -1.0;
+            if (d.hostBodyId >= 0) {
+                auto it = hostById.find((uint64_t)d.hostBodyId);
+                if (it != hostById.end()) curR = (d.pos - it->second->pos).length();
+            }
+            float driftFrac = (curR < 0.0)
+                ? 1.0f
+                : ClampF((float)(std::fabs(curR - (double)d.spawnRadiusFromHost) / (double)d.spawnRadiusFromHost), 0.0f, 1.0f);
+            int driftBucket = (int)std::round(driftFrac * DRIFT_BUCKET_COUNT);
+            if (driftBucket > 0) {
+                float t = (float)driftBucket / (float)DRIFT_BUCKET_COUNT;
+                key = {
+                    (unsigned char)ClampF(key.r*(1-t) + DEBRIS_TINT_COLOR.r*t, 0, 255),
+                    (unsigned char)ClampF(key.g*(1-t) + DEBRIS_TINT_COLOR.g*t, 0, 255),
+                    (unsigned char)ClampF(key.b*(1-t) + DEBRIS_TINT_COLOR.b*t, 0, 255), 255
+                };
+            }
+        }
 
         // Particulas recien expulsadas (heatSpike>0, ver MakeFragments/
         // UpdateDustLifecycle) se tinen hacia HOT_DUST_COLOR y se enfrian
@@ -1332,7 +1562,13 @@ inline void DrawDustField3D(const std::vector<DustParticle>& dust,
         // --- Sombra cilindrica + host, solo polvo de ANILLO con host valido ---
         // Polvo de colision (isRing=false) siempre usa hostKey=NO_HOST y
         // sigue la aproximacion de luz global, sin cambios de comportamiento.
-        bool inShadow = false;
+        // 'lit' es la fraccion de luz directa que SI llega: 1.0 a plena luz,
+        // 0.0 totalmente eclipsado, con un margen de penumbra suavizado
+        // (smoothstep) en el borde del cilindro de sombra del planeta en vez
+        // de un corte binario -- evita el filo duro y antialiaseado de la
+        // version anterior, donde un lote entero pasaba de luz plena a
+        // ambiente puro de golpe.
+        double lit = 1.0;
         uint64_t hostKey = NO_HOST;
         if (d.isRing && d.hostBodyId >= 0) {
             auto it = hostById.find((uint64_t)d.hostBodyId);
@@ -1350,40 +1586,64 @@ inline void DrawDustField3D(const std::vector<DustParticle>& dust,
 
                     Vector3D rel = d.pos - host->pos;
 
-                    // Si la partícula está del lado nocturno del planeta host
-                    // respecto a la luz y cae dentro del cilindro de sombra
-                    // proyectado por el planeta, se marca como eclipsada.
+                    // Si la particula esta del lado nocturno del planeta host
+                    // respecto a la luz, se atenua segun cuanto se adentra en
+                    // el cilindro de sombra proyectado (radio del host +/-
+                    // margen de penumbra).
                     double proj = rel.dot(toLight);
                     if (proj < 0.0) {
                         Vector3D perp = rel - toLight * proj;
-                        if (perp.length() < host->radius) inShadow = true;
+                        double perpLen = perp.length();
+                        double margin  = host->radius * 0.18;
+                        double inner   = std::max(0.0, host->radius - margin);
+                        double outer   = host->radius + margin;
+                        double t = ClampD((perpLen - inner) / std::max(1.0, outer - inner), 0.0, 1.0);
+                        double smooth = t * t * (3.0 - 2.0 * t); // smoothstep
+                        lit = smooth; // 0 en el centro de la sombra, 1 fuera del margen
                     }
                 }
             }
         }
+        int shadowBucket = (int)std::round(ClampD(lit, 0.0, 1.0) * SHADOW_BUCKET_COUNT);
 
         ColorGroup* g = nullptr;
         for (ColorGroup& grp : groups) {
-            if (grp.shadow == inShadow && grp.hostKey == hostKey
+            if (grp.shadowBucket == shadowBucket && grp.hostKey == hostKey && grp.isRing == d.isRing
                 && grp.color.r == heatedKey.r && grp.color.g == heatedKey.g && grp.color.b == heatedKey.b) { g = &grp; break; }
         }
-        if (!g) { groups.push_back({heatedKey, inShadow, hostKey, {}}); g = &groups.back(); }
+        if (!g) { groups.push_back({heatedKey, shadowBucket, hostKey, d.isRing, {}}); g = &groups.back(); }
 
         Vector3 p = ToDrawPos(d.pos);
         float dist3d  = Vector3Distance(camera.position, p);
+
+        // Partículas de cinturón libre (no anillos planetarios): cullear a más de 5000 draw units
+        // (~3.3 AU). A mayor distancia, cada partícula inflada a "3px de pantalla" se convierte
+        // en cientos de draw units de radio, y 34K partículas forman una esfera sólida que escribe
+        // al depth buffer tapando planetas interiores. Dentro de este radio se ven individualmente.
+        if (!d.isRing && d.hostBodyId < 0 && dist3d > 5000.0f) continue;
+
         float screenR = (d.scale / dist3d) / screenToWorld;
         float drawScale = (screenR < 3.0f) ? dist3d * 3.0f * screenToWorld : d.scale;
 
-        // Anillos: SIN tumbling. Si cada roca de anillo rota libremente,
-        // expone una faceta distinta y aleatoria al unico rayo de luz del
-        // lote -> de lejos se ve como un campo de canicas centelleantes en
-        // vez de un disco coherente. Quitar la rotacion de la matriz deja
-        // que la normal de cada instancia sea estable, leyendose como
-        // disco con gradiente suave. El polvo de colision (escombros
-        // sueltos reales) SIGUE tumbando igual que antes.
+        // Anillos: orientacion FIJA por particula (no tumbling continuo).
+        // Si cada roca de anillo rota libremente CADA FRAME, expone una
+        // faceta distinta y aleatoria al unico rayo de luz del lote cuadro
+        // a cuadro -> de lejos se ve como un campo de canicas centelleantes
+        // en vez de un disco coherente. Pero una orientacion COMPLETAMENTE
+        // identica (sin rotacion alguna) para las decenas de miles de
+        // instancias del lote tampoco sirve: con el especular/translucidez
+        // de mas arriba (shaders.h), todas las instancias comparten
+        // exactamente el mismo N, L y (casi) V -> el destello aparece
+        // sincronizado en el MISMO punto de cada roca a la vez, como un
+        // flash uniforme en vez de un brillo disperso natural. La solucion
+        // es una rotacion FIJA (no avanza con el tiempo) pero DISTINTA por
+        // particula, derivada de 'd.seed': variedad real de facetas entre
+        // instancias, sin parpadeo temporal alguno.
         Matrix m = d.isRing
-            ? MatrixMultiply(MatrixScale(drawScale, drawScale, drawScale),
-                              MatrixTranslate(p.x, p.y, p.z))
+            ? MatrixMultiply(
+                  MatrixMultiply(MatrixScale(drawScale, drawScale, drawScale),
+                                  MatrixRotate(d.rotationAxis, d.seed * 2.0f * (float)PI_D)),
+                  MatrixTranslate(p.x, p.y, p.z))
             : MatrixMultiply(
                   MatrixMultiply(MatrixScale(drawScale, drawScale, drawScale),
                                   MatrixRotate(d.rotationAxis, d.currentRotation)),
@@ -1395,17 +1655,15 @@ inline void DrawDustField3D(const std::vector<DustParticle>& dust,
         if (g.transforms.empty()) continue;
 
         // lightDir/lightIntensity por GRUPO (no un unico valor global por
-        // frame, como antes): cada host y cada estado de sombra necesita su
-        // propia direccion/distancia real a la estrella. ld=(0,0,0) fuerza
-        // diffuse=0 en el shader (dot con vector nulo), dejando solo el
-        // termino ambiente -- la particula se ve oscura/en sombra sin un
-        // branch extra en GLSL.
+        // frame, como antes): cada host necesita su propia direccion/
+        // distancia real a la estrella. La atenuacion por sombra ya NO se
+        // hace anulando 'ld' (eso descartaba la direccion real incluso para
+        // el termino especular/translucido) -- ahora 'uShadowFactor' (ver
+        // mas abajo) escala el resultado en el shader, asi que 'ld' siempre
+        // es la direccion real hacia la luz.
         Vector3 ld;
         float   lightDistDraw;
-        if (g.shadow) {
-            ld = {0.0f, 0.0f, 0.0f};
-            lightDistDraw = 1.0f; // sin uso real (diffuse=0), evita div/0
-        } else if (g.hostKey != NO_HOST && mainStar) {
+        if (g.hostKey != NO_HOST && mainStar) {
             auto it = hostById.find(g.hostKey);
             const Body* host = (it != hostById.end()) ? it->second : nullptr;
             Vector3D ts = host ? NormalizeSafe(mainStarPosPhys - host->pos) : Vector3D{0, 0, 1};
@@ -1433,9 +1691,42 @@ inline void DrawDustField3D(const std::vector<DustParticle>& dust,
         SetShaderValue(rockMaterial.shader, rLocs.lightIntensity, &intensity, SHADER_UNIFORM_FLOAT);
         SetShaderValue(rockMaterial.shader, rLocs.ambientStrength, &ambStrength, SHADER_UNIFORM_FLOAT);
 
+        // Fraccion de luz directa que llega a este lote (penumbra suave
+        // cuantizada, ver shadowBucket arriba) -- escala diffuse/especular
+        // en el shader sin tocar 'ld' ni la translucidez.
+        float shadowFactor = (float)g.shadowBucket / (float)SHADOW_BUCKET_COUNT;
+        SetShaderValue(rockMaterial.shader, rLocs.shadowFactor, &shadowFactor, SHADER_UNIFORM_FLOAT);
+
+        // Translucidez de contraluz: solo polvo de ANILLO (hielo/polvo fino)
+        // la exhibe -- el polvo de colision (rocas opacas) se queda en 0,
+        // igual que antes de este cambio.
+        float translucency = g.isRing ? 0.45f : 0.0f;
+        SetShaderValue(rockMaterial.shader, rLocs.translucency, &translucency, SHADER_UNIFORM_FLOAT);
+
+        Vector3 viewPos = camera.position;
+        SetShaderValue(rockMaterial.shader, rLocs.viewPos, &viewPos, SHADER_UNIFORM_VEC3);
+
         Vector3 col = { g.color.r / 255.0f, g.color.g / 255.0f, g.color.b / 255.0f };
         SetShaderValue(rockMaterial.shader, rLocs.baseColor, &col, SHADER_UNIFORM_VEC3);
+        // Anillos de planetas muy lejanos: deshabilitar depth write cuando el planeta host
+        // es sub-pixel en pantalla (< 50px de radio). Sin esto, las miles de partículas
+        // de anillo forman un occluder sólido que tapa planetas aún más lejanos.
+        // Cuando el host es grande en pantalla (cerca), depth write ON es correcto (el anillo
+        // tapa lo que hay detrás de él).
+        bool depthMaskOff = false;
+        if (g.isRing && g.hostKey != NO_HOST) {
+            auto it2 = hostById.find(g.hostKey);
+            if (it2 != hostById.end()) {
+                Vector3 hDraw = ToDrawPos(it2->second->pos);
+                float hDist = std::max(Vector3Distance(camera.position, hDraw), 0.001f);
+                float hScreenR = (float)(it2->second->radius * RENDER_SCALE) / hDist
+                                 * (float)GetScreenHeight() / tanf(camera.fovy * 0.5f * DEG2RAD);
+                depthMaskOff = (hScreenR < 50.0f);
+            }
+        }
+        if (depthMaskOff) rlDisableDepthMask();
         DrawMeshInstanced(rockMesh, rockMaterial, g.transforms.data(), (int)g.transforms.size());
+        if (depthMaskOff) rlEnableDepthMask();
     }
 }
 
@@ -1443,6 +1734,7 @@ inline void DrawDustField3D(const std::vector<DustParticle>& dust,
 struct FlareShaderLocs {
     int realTime, temp, stellarActivity, flareIndex, flareGrow;
     int flareHeightMult, flareMode, flareAsym, flareBurst, flareFade;
+    int flareDrainMode, flareDrainStart;
 };
 
 inline FlareShaderLocs GetFlareShaderLocs(Shader& sh) {
@@ -1457,6 +1749,8 @@ inline FlareShaderLocs GetFlareShaderLocs(Shader& sh) {
     l.flareAsym       = GetShaderLocation(sh, "flareAsym");
     l.flareBurst      = GetShaderLocation(sh, "flareBurst");
     l.flareFade       = GetShaderLocation(sh, "flareFade");
+    l.flareDrainMode  = GetShaderLocation(sh, "flareDrainMode");
+    l.flareDrainStart = GetShaderLocation(sh, "flareDrainStart");
     return l;
 }
 
@@ -1469,6 +1763,7 @@ inline FlareShaderLocs GetFlareShaderLocs(Shader& sh) {
 inline Mesh GenMeshArchRibbon(float archHeight, float phiHalf, float ribbonWidth, int segs) {
     int nV = (segs + 1) * 2;
     int nT = segs * 2;
+
     Mesh m = {};
     m.vertexCount   = nV;
     m.triangleCount = nT;
@@ -1477,37 +1772,153 @@ inline Mesh GenMeshArchRibbon(float archHeight, float phiHalf, float ribbonWidth
     m.normals   = (float*)MemAlloc(nV * 3 * sizeof(float));
     m.indices   = (unsigned short*)MemAlloc(nT * 3 * sizeof(unsigned short));
 
-    float hw    = ribbonWidth * 0.5f;
-    float rBase = 1.0f; // ligeramente DENTRO de la estrella: evita que las flares floten
+    float rBase = 1.0f; // pegado a la superficie de la estrella
 
     for (int i = 0; i <= segs; i++) {
-        float t   = (float)i / (float)segs;
+        float t = (float)i / (float)segs;
+
+        // IMPORTANTE:
+        // Esto corrige el error de "hw no declarado" y además adelgaza el ribbon.
+        // No toca phiHalf, así que NO cambia la separación entre los pies del arco.
+        float ribbonThin = 0.34f;               // 0.30 = más fino, 0.40 = más ancho
+        float centerTaper = sinf(PI * t);       // 0 en pies, 1 en centro
+        centerTaper = powf(centerTaper, 0.75f);
+
+        float hw = ribbonWidth * 0.5f * ribbonThin * (0.18f + 0.82f * centerTaper);
+
         float phi = (-1.0f + 2.0f * t) * phiHalf;
         float st  = sinf(PI * t);
-        float r   = rBase + archHeight * st * st; // perfil parabolico
+        float r   = rBase + archHeight * st * st;
+
         float cx  = sinf(phi) * r;
         float cz  = cosf(phi) * r;
+
         float nx  = sinf(phi);
         float nz  = cosf(phi);
+
         int vi = i * 2;
-        // Borde interior (UV.y=0): y = -hw
-        m.vertices[vi*3]   = cx; m.vertices[vi*3+1] = -hw; m.vertices[vi*3+2] = cz;
-        m.texcoords[vi*2]  = t;  m.texcoords[vi*2+1] = 0.0f;
-        m.normals[vi*3]    = nx; m.normals[vi*3+1]   = 0.0f; m.normals[vi*3+2] = nz;
-        // Borde exterior (UV.y=1): y = +hw
-        m.vertices[(vi+1)*3]   = cx; m.vertices[(vi+1)*3+1] = hw; m.vertices[(vi+1)*3+2] = cz;
-        m.texcoords[(vi+1)*2]  = t;  m.texcoords[(vi+1)*2+1] = 1.0f;
-        m.normals[(vi+1)*3]    = nx; m.normals[(vi+1)*3+1]   = 0.0f; m.normals[(vi+1)*3+2] = nz;
+
+        // Borde interior
+        m.vertices[vi*3+0] = cx;
+        m.vertices[vi*3+1] = -hw;
+        m.vertices[vi*3+2] = cz;
+
+        m.texcoords[vi*2+0] = t;
+        m.texcoords[vi*2+1] = 0.0f;
+
+        m.normals[vi*3+0] = nx;
+        m.normals[vi*3+1] = 0.0f;
+        m.normals[vi*3+2] = nz;
+
+        // Borde exterior
+        m.vertices[(vi+1)*3+0] = cx;
+        m.vertices[(vi+1)*3+1] = hw;
+        m.vertices[(vi+1)*3+2] = cz;
+
+        m.texcoords[(vi+1)*2+0] = t;
+        m.texcoords[(vi+1)*2+1] = 1.0f;
+
+        m.normals[(vi+1)*3+0] = nx;
+        m.normals[(vi+1)*3+1] = 0.0f;
+        m.normals[(vi+1)*3+2] = nz;
     }
+
     for (int i = 0; i < segs; i++) {
-        int b = i*2, ti = i*2;
-        m.indices[ti*3]     = (unsigned short)b;
-        m.indices[ti*3+1]   = (unsigned short)(b+2);
-        m.indices[ti*3+2]   = (unsigned short)(b+1);
-        m.indices[(ti+1)*3]   = (unsigned short)(b+1);
-        m.indices[(ti+1)*3+1] = (unsigned short)(b+2);
-        m.indices[(ti+1)*3+2] = (unsigned short)(b+3);
+        int b  = i * 2;
+        int ti = i * 2;
+
+        m.indices[ti*3+0] = (unsigned short)b;
+        m.indices[ti*3+1] = (unsigned short)(b + 2);
+        m.indices[ti*3+2] = (unsigned short)(b + 1);
+
+        m.indices[(ti+1)*3+0] = (unsigned short)(b + 1);
+        m.indices[(ti+1)*3+1] = (unsigned short)(b + 2);
+        m.indices[(ti+1)*3+2] = (unsigned short)(b + 3);
     }
+
+    UploadMesh(&m, false);
+    return m;
+}
+
+// ── Arco TUBO (seccion circular, no plana) ───────────────────
+// Sustituye a GenMeshArchRibbon con seccion transversal circular.
+// El arco sigue el mismo trazado en el plano XZ, pero cada anillo
+// de vertices rodea el eje del arco formando un cilindro curvo.
+//
+// Parametrizacion del tubo:
+//   Centro del anillo:  (sin(φ)·r, 0, cos(φ)·r)     [en el plano XZ]
+//   Eje vertical:       Y = (0,1,0)                   [perpendicular al plano]
+//   Eje radial:         R = (sin(φ), 0, cos(φ))       [saliente del eje]
+//   Vertex del tubo:    centro + tr·(cosα·Y + sinα·R) [circulo en Y×R]
+//   Normal:             (sinα·sin(φ), cosα, sinα·cos(φ))
+//
+// El radio del tubo se afina en los extremos (t=0 y t=1) con
+// powf(sin(π·t), 0.5f) para que las llamaradas emerjan suavemente.
+inline Mesh GenMeshArchTube(float archHeight, float phiHalf,
+                             float tubeRadius, int segs, int sides)
+{
+    int nV = (segs + 1) * sides;
+    int nT = segs * sides * 2;
+
+    Mesh m = {};
+    m.vertexCount   = nV;
+    m.triangleCount = nT;
+    m.vertices  = (float*)MemAlloc(nV * 3 * sizeof(float));
+    m.texcoords = (float*)MemAlloc(nV * 2 * sizeof(float));
+    m.normals   = (float*)MemAlloc(nV * 3 * sizeof(float));
+    m.indices   = (unsigned short*)MemAlloc(nT * 3 * sizeof(unsigned short));
+
+    float rBase = 1.0f;
+
+    for (int i = 0; i <= segs; i++) {
+        float t  = (float)i / (float)segs;
+        float phi = (-1.0f + 2.0f * t) * phiHalf;
+        float st  = sinf(PI * t);
+        float r   = rBase + archHeight * st * st;
+
+        // Afinar el tubo en los extremos: sin^0.5 da transicion suave
+        float tr = tubeRadius * powf(st, 0.5f);
+
+        float sp = sinf(phi), cp = cosf(phi);
+
+        for (int j = 0; j < sides; j++) {
+            float alpha = j * 2.0f * PI / sides;
+            float cosA = cosf(alpha), sinA = sinf(alpha);
+
+            // Posicion: centro + tr*(cosA * Y + sinA * R)
+            // donde Y=(0,1,0) y R=(sin(phi),0,cos(phi))
+            float x = sp * r + tr * sinA * sp;
+            float y = tr * cosA;
+            float z = cp * r + tr * sinA * cp;
+
+            // Normal apuntando hacia fuera del tubo
+            float nx = sinA * sp;
+            float ny = cosA;
+            float nz = sinA * cp;
+            float nLen = sqrtf(nx*nx + ny*ny + nz*nz);
+            if (nLen > 0.0001f) { nx/=nLen; ny/=nLen; nz/=nLen; }
+
+            int vi = i * sides + j;
+            m.vertices [vi*3+0] = x; m.vertices [vi*3+1] = y; m.vertices [vi*3+2] = z;
+            m.texcoords[vi*2+0] = t; m.texcoords[vi*2+1] = (float)j / sides;
+            m.normals  [vi*3+0] = nx;m.normals  [vi*3+1] = ny;m.normals  [vi*3+2] = nz;
+        }
+    }
+
+    // Indices: conectar anillos formando quads
+    int idx = 0;
+    for (int i = 0; i < segs; i++) {
+        for (int j = 0; j < sides; j++) {
+            int j2 = (j + 1) % sides;
+            unsigned short a = (unsigned short)(i * sides + j);
+            unsigned short b = (unsigned short)(i * sides + j2);
+            unsigned short c = (unsigned short)((i+1) * sides + j);
+            unsigned short d = (unsigned short)((i+1) * sides + j2);
+            m.indices[idx++]=a; m.indices[idx++]=c; m.indices[idx++]=b;
+            m.indices[idx++]=b; m.indices[idx++]=c; m.indices[idx++]=d;
+        }
+    }
+
     UploadMesh(&m, false);
     return m;
 }
@@ -1517,7 +1928,7 @@ inline Mesh GenMeshArchRibbon(float archHeight, float phiHalf, float ribbonWidth
 // La base empieza como punto dentro de la superficie para no flotar.
 inline Mesh GenMeshRadialJet(float baseR = 1.0f,
                              float length = 0.90f,
-                             float maxWidth = 0.105f,
+                             float maxWidth = 0.072f,
                              int segs = 28,
                              int sides = 10)
 {
@@ -1536,21 +1947,28 @@ inline Mesh GenMeshRadialJet(float baseR = 1.0f,
     for (int i = 0; i <= segs; ++i) {
         float t = (float)i / (float)segs;
 
-        // Sale desde punto/casi punto en la superficie y se abre como plasma.
         float z = baseR + length * t;
 
-        // Ancho cero en la base: esto elimina el "aro flotante".
+        // Perfil más delgado que el anterior:
+        // - baseFoot baja de 0.16 a 0.045
+        // - maxWidth baja de 0.105 a 0.072
+        // - taper más fuerte para que el jet no se vea gordito.
         float envelope = sinf(PI * t);
-        float taper    = powf(1.0f - t, 0.35f);
-        float baseFoot = maxWidth * 0.16f;
-        float w = baseFoot * (1.0f - t) + maxWidth * envelope * taper;
+        float taper = powf(1.0f - t, 0.95f);
+
+        float baseFoot = maxWidth * 0.045f;
+        float jetCoreWidth = maxWidth * 0.72f;
+
+        float w = baseFoot * (1.0f - t) + jetCoreWidth * envelope * taper;
 
         for (int j = 0; j < sides; ++j) {
             float a = 2.0f * PI * (float)j / (float)sides;
+
             float x = cosf(a) * w;
             float y = sinf(a) * w;
 
             int v = i * sides + j;
+
             m.vertices[v*3+0] = x;
             m.vertices[v*3+1] = y;
             m.vertices[v*3+2] = z;
@@ -1604,10 +2022,10 @@ inline float SmoothStepF(float edge0, float edge1, float x) {
 // La base tiene footprint real sobre la superficie; el shader proyecta
 // los vértices para que length(pos) == radio shell real.
 inline Mesh GenMeshFlarePuff(float baseR = 1.0f,
-                             float height = 0.95f,
-                             float maxWidth = 0.42f,
+                             float height = 0.50f,
+                             float maxWidth = 0.24f,
                              int rings = 22,
-                             int sides = 18)
+                             int sides = 24)
 {
     int nV = (rings + 1) * sides;
     int nT = rings * sides * 2;
@@ -1623,56 +2041,97 @@ inline Mesh GenMeshFlarePuff(float baseR = 1.0f,
     for (int i = 0; i <= rings; ++i) {
         float t = (float)i / (float)rings;
 
-        // La erupción fallida debe verse grande desde lejos:
-        // sube bastante, pero no forma "cabeza de hongo".
-        float rise = powf(t, 0.82f);
-        float z = baseR + height * rise;
+        // Mantener t^2: esto fue lo que hizo que la explosión salga desde la base,
+        // no como jet.
+        float rise = powf(t, 2.0f);
 
-        // Footprint pequeño, cuerpo que se abre como abanico y luego se deshilacha.
-        float open  = SmoothStepF(0.02f, 0.30f, t);
-        float fadeTop = 1.0f - SmoothStepF(0.82f, 1.0f, t);
+        // Radio real del shell del puff.
+        // En t=0 es exactamente baseR, o sea, pegado a la superficie de la estrella.
+        float shellR = baseR + height * rise;
 
-        // No cerramos en una bola: mantenemos una cola abierta/filamentosa.
-        float plume = sinf(PI * ClampF(t, 0.0f, 1.0f));
-        float w = 0.035f * (1.0f - t) + maxWidth * open * (0.35f + 0.65f * plume) * (0.55f + 0.45f * fadeTop);
+        // Forma compacta y gordita, pero no enorme.
+        float bottomBlob = 1.0f - SmoothStepF(0.00f, 0.38f, t);
+        float midBlob    = sinf(PI * ClampF(t, 0.0f, 1.0f));
+        float topFade    = 1.0f - SmoothStepF(0.72f, 1.0f, t);
+
+        float baseWidth =
+            maxWidth *
+            (0.52f + 0.12f * sinf(PI * ClampF(t / 0.38f, 0.0f, 1.0f))) *
+            bottomBlob;
+
+        float bodyOpen = SmoothStepF(0.00f, 0.16f, t);
+
+        float bodyWidth =
+            maxWidth *
+            bodyOpen *
+            (0.76f + 0.24f * midBlob) *
+            (0.76f + 0.24f * topFade);
+
+        float w = std::max(baseWidth, bodyWidth);
+
+        // Mantiene la parte baja con volumen para que no vuelva el cuello tipo jet.
+        float lowerHold = 1.0f - SmoothStepF(0.22f, 0.44f, t);
+        float lowerMinWidth = maxWidth * 0.44f * lowerHold;
+        w = std::max(w, lowerMinWidth);
 
         for (int j = 0; j < sides; ++j) {
             float a = 2.0f * PI * (float)j / (float)sides;
 
-            // Aplastado vertical/lateral: más abanico de plasma que globo.
-            float fanX = cosf(a);
-            float fanY = sinf(a) * 0.32f;
+            // CLAVE:
+            // La sección transversal es circular. Nada de fanYScale.
+            // X e Y usan exactamente el mismo radio.
+            float circleX = cosf(a);
+            float circleY = sinf(a);
 
-            // Filamentos: no todos los radios tienen el mismo ancho.
+            // Filamentos solo en la parte media/alta, no en la base.
+            float filamentStrength = SmoothStepF(0.24f, 0.78f, t);
+
             float filament =
                 1.0f
-                + 0.22f * sinf(a * 3.0f + t * 5.0f + 1.1f)
-                + 0.13f * sinf(a * 7.0f - t * 8.0f + 0.4f);
+                + filamentStrength * 0.09f * sinf(a * 3.0f + t * 5.0f + 1.1f)
+                + filamentStrength * 0.05f * sinf(a * 7.0f - t * 8.0f + 0.4f);
 
-            // Más rotura hacia la parte alta.
-            float shred = 1.0f + 0.18f * t * sinf(a * 5.0f + t * 13.0f);
+            float shred =
+                1.0f + 0.05f * t * sinf(a * 5.0f + t * 13.0f);
 
             float ww = w * filament * shred;
 
-            // Ligera inclinación lateral: parece material arrastrado por campo magnético,
-            // no una explosión vertical simétrica.
-            float lean = (t * t) * maxWidth * 0.22f;
+            // Menos inclinación y empieza tarde.
+            // Importante: lean = 0 cerca de la base para no convertir el círculo en óvalo.
+            float leanStart = SmoothStepF(0.36f, 1.0f, t);
+            float lean = (t * t) * maxWidth * 0.06f * leanStart;
 
-            float x = fanX * ww + lean;
-            float y = fanY * ww;
+            float localX = circleX * ww + lean;
+            float localY = circleY * ww;
+
+            // ESTA ES LA CORRECCIÓN REAL:
+            // Antes hacíamos:
+            //     vertex = { localX, localY, shellR };
+            //
+            // Eso crea un disco plano tangente a la estrella.
+            //
+            // Ahora hacemos:
+            //     dir = normalize({ localX, localY, baseR });
+            //     vertex = dir * shellR;
+            //
+            // Así la base se curva sobre la estrella y deja de verse como
+            // una tapa ovalada/plana.
+            Vector3 dir = Vector3Normalize({ localX, localY, baseR });
+            Vector3 pos = Vector3Scale(dir, shellR);
 
             int v = i * sides + j;
-            m.vertices[v*3+0] = x;
-            m.vertices[v*3+1] = y;
-            m.vertices[v*3+2] = z;
+
+            m.vertices[v*3+0] = pos.x;
+            m.vertices[v*3+1] = pos.y;
+            m.vertices[v*3+2] = pos.z;
 
             m.texcoords[v*2+0] = t;
             m.texcoords[v*2+1] = (float)j / (float)sides;
 
-            Vector3 n = Vector3Normalize({x, y, std::max(0.10f, z - baseR)});
-            m.normals[v*3+0] = n.x;
-            m.normals[v*3+1] = n.y;
-            m.normals[v*3+2] = n.z;
+            // Normal radial del shell curvado.
+            m.normals[v*3+0] = dir.x;
+            m.normals[v*3+1] = dir.y;
+            m.normals[v*3+2] = dir.z;
         }
     }
 
@@ -1700,6 +2159,311 @@ inline Mesh GenMeshFlarePuff(float baseR = 1.0f,
     return m;
 }
 
+// ── Campo magnético y jets de Magnetar ──────────────────────────────────────────
+// Visualizacion del campo magnetico dipolar: cientos de filamentos curvos
+// (arcos) que emergen desde los polos siguiendo trayectorias dipolares con
+// turbulencia anadida, mas jets polares anchos y cortos.
+//
+// Estructura:
+//  • LINEAS DE CAMPO: arcos (archModel) orientados por la ecuacion dipolar
+//    r = r_max*sin²(θ), distribuidos en 360° azimutales, con:
+//    - Turbulencia temporal (FBM sinusoidal, vibracion, ondulacion)
+//    - Variable grosor y longitud segun la latitud de la linea
+//    - Colores: azul profundo, cian, violeta, blanco segun distancia al polo
+//    - Intensidad decreciente con la distancia
+//  • JETS: dos conos anchos y cortos en los polos (mas gordos/cortos que pulsar)
+inline void DrawMagnetarEffect(const Body& b, Shader& sh, const FlareShaderLocs& fl,
+                                 Model& archModel, Model& jetModel)
+{
+    if (!b.isStar || b.stellarPhase != StellarPhase::MAGNETAR) return;
+
+    float rR  = (float)(b.radius * RENDER_SCALE);
+    if (rR < 1e-7f) rR = 0.0001f;
+    Vector3 p   = ToDrawPos(b.pos);
+    float   rt  = (float)g_flareClock;
+    float   tp  = (float)std::min(b.temperature, 5.0e6);
+
+    // Eje de rotacion del magnetar
+    float tiltR = b.axialTilt    * DEG2RAD;
+    float rotR  = b.rotationAngle * DEG2RAD;
+    Vector3 pole = Vector3Normalize({
+        sinf(tiltR)*cosf(rotR), cosf(tiltR), sinf(tiltR)*sinf(rotR)
+    });
+
+    // Dos vectores base perpendiculares al polo para el plano azimutal
+    Vector3 px = { 1,0,0 };
+    if (fabsf(pole.x) > 0.98f) px = { 0,1,0 };
+    Vector3 pz = Vector3Normalize(Vector3CrossProduct(pole, px));
+    px = Vector3Normalize(Vector3CrossProduct(pz, pole));
+
+    // Hash determinista por semilla (id+i) para variedad sin aleatorio por frame
+    auto dh = [](uint64_t id, int i) -> float {
+        uint64_t h = id * 2654435761ull ^ (uint64_t)(i * 1664525 + 1013904223);
+        h ^= h >> 16; h *= 0x45d9f3bULL; h ^= h >> 16;
+        return (float)(h & 0xFFFF) / 65535.0f;
+    };
+
+    // Uniforms fijos para todo el efecto (fuera del bucle para evitar
+    // 240 llamadas a glUseProgram que saturaban el pipeline y crasheaban)
+    float grow=1.f,fade=1.f,mode=0.f,asym=0.3f,burst=0.6f,hmult=1.f;
+    float drainM=0.f,drainS=0.f;
+    float baseAct = 0.8f + 0.2f*sinf(rt*0.4f);
+    float fi0 = 0.f;
+    SetShaderValue(sh, fl.realTime,        &rt,     SHADER_UNIFORM_FLOAT);
+    SetShaderValue(sh, fl.temp,            &tp,     SHADER_UNIFORM_FLOAT);
+    SetShaderValue(sh, fl.stellarActivity, &baseAct,SHADER_UNIFORM_FLOAT);
+    SetShaderValue(sh, fl.flareGrow,       &grow,   SHADER_UNIFORM_FLOAT);
+    SetShaderValue(sh, fl.flareFade,       &fade,   SHADER_UNIFORM_FLOAT);
+    SetShaderValue(sh, fl.flareMode,       &mode,   SHADER_UNIFORM_FLOAT);
+    SetShaderValue(sh, fl.flareAsym,       &asym,   SHADER_UNIFORM_FLOAT);
+    SetShaderValue(sh, fl.flareBurst,      &burst,  SHADER_UNIFORM_FLOAT);
+    SetShaderValue(sh, fl.flareHeightMult, &hmult,  SHADER_UNIFORM_FLOAT);
+    SetShaderValue(sh, fl.flareDrainMode,  &drainM, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(sh, fl.flareDrainStart, &drainS, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(sh, fl.flareIndex,      &fi0,    SHADER_UNIFORM_FLOAT);
+
+    BeginBlendMode(BLEND_ADDITIVE);
+    rlDisableDepthMask();
+    rlDisableBackfaceCulling();
+
+    // ────────────────────────────────────────────────────────────
+    // LINEAS DE CAMPO MAGNETICO (ecuacion dipolar real)
+    // r(θ) = r₀ · sin²(θ),  θ ∈ [0, π]  (polo N → ecuador → polo S)
+    //
+    // Esto garantiza que:
+    //  • θ=0 → r=0 → inicio en el polo norte de la NS
+    //  • θ=π/2 → r=r₀ → maximo apogeo ecuatorial
+    //  • θ=π → r=0 → regreso al polo sur de la NS
+    //  • Todo el campo rota con b.rotationAngle porque 'pole' y 'bRad'
+    //    se recalculan desde axialTilt+rotationAngle cada frame.
+    // ────────────────────────────────────────────────────────────
+    const int N_LINES = 20;  // filamentos azimutales
+    const int SEGS    = 20;  // segmentos por filamento
+
+    for (int i = 0; i < N_LINES; i++) {
+        float h0 = dh(b.id, i*5+0);
+        float h1 = dh(b.id, i*5+1);
+        float h2 = dh(b.id, i*5+2);
+
+        // Angulo azimutal base uniformemente distribuido + pequena variacion aleatoria
+        float phi = (float)i / N_LINES * 2.0f * PI + h0 * 0.25f;
+
+        // Turbulencia temporal del angulo (las lineas "vibran" lentamente)
+        phi += (0.1f + h1 * 0.2f) * sinf(rt * (0.2f + h2 * 0.5f) + h0 * 12.0f);
+
+        // r0: extension ecuatorial de esta linea (varia entre ~3x y ~10x rR)
+        // Lineas cercanas al polo (i cerca de 0 o N_LINES) son mas cortas.
+        float colatParam = 0.1f + 0.8f * fabsf(sinf((float)i / N_LINES * PI));
+        float r0 = rR * (3.0f + 7.0f * colatParam);
+
+        // Direccion azimutal en el plano perpendicular al polo
+        float cp = cosf(phi), sp = sinf(phi);
+        Vector3 bRad = Vector3Normalize({
+            px.x*cp + pz.x*sp,
+            px.y*cp + pz.y*sp,
+            px.z*cp + pz.z*sp
+        });
+
+        // Color: mas cercano al polo = mas brillante/blanco; ecuatorial = azul
+        float brightness  = 0.4f + 0.6f * (1.0f - colatParam * 0.8f);
+        unsigned char alpha = (unsigned char)(int(160 * brightness));
+        Color lineColor;
+        int cc = i % 4;
+        switch(cc) {
+        case 0: lineColor = {  60, 130, 255, alpha }; break; // azul
+        case 1: lineColor = {  20, 200, 255, alpha }; break; // cian
+        case 2: lineColor = { 160,  70, 255, alpha }; break; // violeta
+        default:lineColor = { 210, 235, 255, alpha }; break; // blanco-azul
+        }
+
+        // Trazar la curva dipolar como capsulas 3D (tubo redondo)
+        // DrawCapsule da la misma apariencia cilindrica que el nuevo
+        // GenMeshArchTube para que los filamentos del campo magnetico
+        // sean visualmente consistentes con las llamaradas estelares.
+        Vector3 prev  = {};
+        bool    hasPrev = false;
+        float   prevR   = 0.0f;
+
+        for (int s = 0; s <= SEGS; s++) {
+            float theta = PI * (float)s / SEGS;
+            float sinT  = sinf(theta);
+            float cosT  = cosf(theta);
+            float r     = r0 * sinT * sinT;
+
+            // Ruido sutil en r
+            r *= 1.0f + 0.04f * sinf(rt * 0.5f + s * 0.9f + phi * 3.0f);
+
+            Vector3 pos = {
+                p.x + pole.x * r * cosT + bRad.x * r * sinT,
+                p.y + pole.y * r * cosT + bRad.y * r * sinT,
+                p.z + pole.z * r * cosT + bRad.z * r * sinT
+            };
+
+            if (hasPrev && r > rR * 0.8f && prevR > rR * 0.8f) {
+                // Radio del tubo: maximo en el ecuador (r=r0), cero en los polos
+                float capsR = rR * (0.012f + 0.05f * sinT * sinT) * brightness;
+                DrawCapsule(prev, pos, capsR, 4, 1, lineColor);
+            }
+            prev    = pos;
+            prevR   = r;
+            hasPrev = (r > rR * 0.3f);
+        }
+    }
+    rlDrawRenderBatchActive();
+
+    // ────────────────────────────────────────────────────────────
+    // JETS POLARES (mas anchos y cortos que los de un pulsar)
+    // JetTRS: embebe Scale+Rotation+Translation en UNA sola matriz.
+    // Esto es critico: DrawModelEx aplica el scale en espacio MUNDO
+    // (despues de la rotacion), lo que aplasta la seccion circular del
+    // jet en direcciones incorrectas. Con la matriz completa en
+    // model.transform y DrawModel(scale=1), el scale se aplica primero
+    // en espacio LOCAL → seccion circular correcta desde cualquier angulo.
+    // ────────────────────────────────────────────────────────────
+    auto JetTRS = [rR](Vector3 pos, Vector3 poleAxis, float w, float len) -> Matrix {
+        Vector3 up = (fabsf(poleAxis.y) < 0.99f) ? Vector3{0,1,0} : Vector3{1,0,0};
+        Vector3 bx = Vector3Normalize(Vector3CrossProduct(up, poleAxis));
+        Vector3 by = Vector3Normalize(Vector3CrossProduct(poleAxis, bx));
+        // Origen desplazado para que z=1 del mesh quede en la superficie (rR)
+        // local z=1 → pos + poleAxis*(rR-len) + poleAxis*len = pos + poleAxis*rR ✓
+        float tx = pos.x + poleAxis.x*(rR - len);
+        float ty = pos.y + poleAxis.y*(rR - len);
+        float tz = pos.z + poleAxis.z*(rR - len);
+        return Matrix{
+            bx.x*w, by.x*w, poleAxis.x*len, tx,
+            bx.y*w, by.y*w, poleAxis.y*len, ty,
+            bx.z*w, by.z*w, poleAxis.z*len, tz,
+            0.f, 0.f, 0.f, 1.f
+        };
+    };
+
+    float jetLen = rR * 20.0f;
+    float jetW   = rR * 10.0f;
+    float jfi0=0.f, jfi1=1.f;
+    float jetAct = 1.0f + 0.1f*sinf(rt*0.5f);
+    SetShaderValue(sh, fl.stellarActivity, &jetAct, SHADER_UNIFORM_FLOAT);
+    float jetHmult = 20.f;
+    SetShaderValue(sh, fl.flareHeightMult, &jetHmult, SHADER_UNIFORM_FLOAT);
+
+    SetShaderValue(sh, fl.flareIndex, &jfi0, SHADER_UNIFORM_FLOAT);
+    jetModel.transform = JetTRS(p, pole, jetW, jetLen);
+    DrawModel(jetModel, {0,0,0}, 1.f, WHITE);
+
+    SetShaderValue(sh, fl.flareIndex, &jfi1, SHADER_UNIFORM_FLOAT);
+    jetModel.transform = JetTRS(p, Vector3Negate(pole), jetW, jetLen);
+    DrawModel(jetModel, {0,0,0}, 1.f, WHITE);
+
+    jetModel.transform   = MatrixIdentity();
+    archModel.transform  = MatrixIdentity();
+
+    rlDrawRenderBatchActive();
+    rlEnableBackfaceCulling();
+    rlEnableDepthMask();
+    EndBlendMode();
+}
+
+// ── Jets polares de pulsares ─────────────────────────────────────────────────────
+// Dos jets permanentes (norte y sur) alineados con el eje de rotacion real
+// del pulsar, definido por b.axialTilt y b.rotationAngle. Si el pulsar se
+// tambalea (precesion del eje), el jet se tambalea con el. Los jets usan el
+// mismo jetModel (GenMeshRadialJet) y flareShader que las llamaradas estelares
+// normales, pero mucho mas largos, mas brillantes, y siempre activos.
+inline void DrawPulsarPolarJets(const Body& b, Shader& sh, const FlareShaderLocs& fl,
+                                  Model& jetModel)
+{
+    // Jets polares: SOLO pulsares. Los magnetares tienen campo magnetico
+    // brutal pero giran MAS LENTO (periodo ~segundos vs ms en pulsares)
+    // y su fenomeno distintivo es el toro/campo magnetico, no los jets.
+    if (!b.isStar) return;
+    if (b.stellarPhase != StellarPhase::PULSAR) return;
+
+    float rR  = (float)(b.radius * RENDER_SCALE);
+    if (rR < 1e-7f) rR = 0.0001f; // minimo visual
+    Vector3 p = ToDrawPos(b.pos);
+    float rt  = (float)g_flareClock;
+
+    // Temperatura del pulsar (muy alta, da color azul-blanco al shader)
+    float tp  = (float)std::min(b.temperature, 2.0e6);
+
+    // Actividad maxima + pulsacion sutil segun spin
+    float spinFreq = (b.spinRateDeg > 100.f)
+        ? std::min((float)b.spinRateDeg * (float)(PI_D/180.0/1200.0) * 2.0f, 30.0f)
+        : 2.0f;
+    float pulsation = 1.0f + 0.12f * sinf(rt * spinFreq);
+    float act = ClampF(pulsation, 0.8f, 1.2f);
+
+    // ── Eje de rotacion del pulsar ───────────────────────────────
+    float tiltR = b.axialTilt    * DEG2RAD;
+    float rotR  = b.rotationAngle * DEG2RAD;
+    Vector3 poleN = Vector3Normalize({
+        sinf(tiltR) * cosf(rotR),
+        cosf(tiltR),
+        sinf(tiltR) * sinf(rotR)
+    });
+
+    // ── Construir transform T×R×S completo (misma razon que JetTRS del magnetar)
+    // Scale embebido en la matriz → seccion circular correcta independientemente
+    // de la orientacion del polo.
+    auto PulsarJetTRS = [rR](Vector3 pos, Vector3 poleAxis, float w, float len) -> Matrix {
+        Vector3 up = (fabsf(poleAxis.y) < 0.99f) ? Vector3{0,1,0} : Vector3{1,0,0};
+        Vector3 bx = Vector3Normalize(Vector3CrossProduct(up, poleAxis));
+        Vector3 by = Vector3Normalize(Vector3CrossProduct(poleAxis, bx));
+        float tx = pos.x + poleAxis.x*(rR - len);
+        float ty = pos.y + poleAxis.y*(rR - len);
+        float tz = pos.z + poleAxis.z*(rR - len);
+        return Matrix{
+            bx.x*w, by.x*w, poleAxis.x*len, tx,
+            bx.y*w, by.y*w, poleAxis.y*len, ty,
+            bx.z*w, by.z*w, poleAxis.z*len, tz,
+            0.f, 0.f, 0.f, 1.f
+        };
+    };
+
+    float jetLen   = rR * 50.0f;
+    float jetWidth = rR * 6.0f;
+
+    float grow = 1.0f, fade = 1.0f;
+    float mode = 1.0f;    // 1 = jet geometry (no arco)
+    float hmult = 50.0f;  // estirar el jet a lo largo
+    float asym = 0.0f, burst = 0.3f;
+    float drainMode = 0.0f, drainStart = 0.0f;
+    float fi0 = 0.0f, fi1 = 1.0f; // indices de los dos jets
+
+    SetShaderValue(sh, fl.realTime,        &rt,   SHADER_UNIFORM_FLOAT);
+    SetShaderValue(sh, fl.temp,            &tp,   SHADER_UNIFORM_FLOAT);
+    SetShaderValue(sh, fl.stellarActivity, &act,  SHADER_UNIFORM_FLOAT);
+    SetShaderValue(sh, fl.flareGrow,       &grow, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(sh, fl.flareFade,       &fade, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(sh, fl.flareMode,       &mode, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(sh, fl.flareHeightMult, &hmult,SHADER_UNIFORM_FLOAT);
+    SetShaderValue(sh, fl.flareAsym,       &asym, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(sh, fl.flareBurst,      &burst,SHADER_UNIFORM_FLOAT);
+    SetShaderValue(sh, fl.flareDrainMode,  &drainMode,  SHADER_UNIFORM_FLOAT);
+    SetShaderValue(sh, fl.flareDrainStart, &drainStart, SHADER_UNIFORM_FLOAT);
+
+    BeginBlendMode(BLEND_ADDITIVE);
+    rlDisableDepthMask();
+    rlDisableBackfaceCulling();
+
+    // ── Jet norte ────────────────────────────────────────────────
+    SetShaderValue(sh, fl.flareIndex, &fi0, SHADER_UNIFORM_FLOAT);
+    jetModel.transform = PulsarJetTRS(p, poleN, jetWidth, jetLen);
+    DrawModel(jetModel, {0,0,0}, 1.0f, WHITE);
+
+    // ── Jet sur ──────────────────────────────────────────────────
+    SetShaderValue(sh, fl.flareIndex, &fi1, SHADER_UNIFORM_FLOAT);
+    jetModel.transform = PulsarJetTRS(p, Vector3Negate(poleN), jetWidth, jetLen);
+    DrawModel(jetModel, {0,0,0}, 1.0f, WHITE);
+
+    // Restaurar transform del modelo
+    jetModel.transform = MatrixIdentity();
+
+    rlDrawRenderBatchActive();
+    rlEnableBackfaceCulling();
+    rlEnableDepthMask();
+    EndBlendMode();
+}
+
 // ── Llamaradas solares: N arcos-cinta aditivos alrededor de la estrella ──────────
 // Cada arco tiene orientacion aleatoria determinista y textura unica (flareIndex).
 // El shader anima el fuego independientemente de camara/pausa via realTime.
@@ -1710,14 +2474,59 @@ inline void DrawStarFlares(const Body& b, Shader& sh, const FlareShaderLocs& fl,
                             int nFlares)
 {
     if (!b.isStar || b.stellarActivity < 0.01f) return;
+    // Enanas blancas y negras: ya NO son estrellas en fusion activa --
+    // sin conveccion ni presion de radiacion que sostenga llamaradas.
+    // Enana blanca = nucleo compacto de C/O enfriandose; enana negra =
+    // lo mismo, ya completamente fria. Ninguna tiene cromosfera
+    // activa ni campo magnetico renovado por conveccion que justifique
+    // este tipo de arcos/jets. (Enana azul tampoco, pero ya queda
+    // excluida por stellarActivity ~ 0 al ser una fase hipotetica fria.)
+    if (b.stellarPhase == StellarPhase::WHITE_DWARF ||
+        b.stellarPhase == StellarPhase::BLACK_DWARF  ||
+        b.stellarPhase == StellarPhase::PULSAR        ||
+        b.stellarPhase == StellarPhase::MAGNETAR) return;
 
     float rR   = std::max(0.001f, (float)(b.radius * RENDER_SCALE));
     Vector3 p  = ToDrawPos(b.pos);
     float act  = b.stellarActivity;
     float tp   = (float)b.temperature;
-    float rt   = (float)GetTime();
+    float rt   = (float)g_flareClock;
 
     float mDwarf = 1.0f - ClampF((tp - 3400.0f) / (4100.0f - 3400.0f), 0.0f, 1.0f);
+
+    // La clasificacion "M-dwarf" es PURAMENTE de temperatura -- y una gigante
+    // roja/supergigante en fase final tiene una fotosfera tan fria (~3000-
+    // 4000K) como una enana roja real (ver ApplyStellarPhaseProperties:
+    // target de temperatura de RED_GIANT/SUPERGIANT cae bien dentro de este
+    // rango). Sin este amortiguador, CUALQUIER gigante/moribunda heredaba el
+    // tratamiento de "enana roja hiperactiva" (periodo de llamarada hasta
+    // 62% mas corto, hasta el doble de llamaradas simultaneas, mas altura) --
+    // apropiado para una enana real, absurdo para una estrella moribunda
+    // que deberia tener prominencias grandes y PAUSADAS, no frenéticas.
+    bool dyingPhase = b.stellarPhase == StellarPhase::RED_GIANT
+                    || b.stellarPhase == StellarPhase::SUPERGIANT
+                    || b.stellarPhase == StellarPhase::PLANETARY_NEBULA
+                    || b.stellarPhase == StellarPhase::WHITE_DWARF
+                    || b.stellarPhase == StellarPhase::SUPERNOVA;
+    if (dyingPhase) mDwarf *= 0.30f;
+
+    // Inestabilidad: una estrella a punto de morir (convección violenta,
+    // capas externas en colapso/expansión descontrolada) NO deberia verse
+    // tan predecible/ciclica como una enana estable en plena secuencia
+    // principal -- pero el bug de parpadeo (ver comentario de starSeed
+    // mas abajo) demostro que cualquier cosa que cambie el patron de
+    // llamaradas CADA FRAME se ve como ruido catastrofico, no como
+    // "inestabilidad". La solucion: el patron SI se reordena para
+    // estrellas inestables, pero solo en saltos discretos cada pocos
+    // segundos (CHAOS_EPOCH_SEC, ver mas abajo) -- nunca frame a frame.
+    float instability = 0.0f;
+    switch (b.stellarPhase) {
+        case StellarPhase::RED_GIANT:        instability = 0.35f; break;
+        case StellarPhase::SUPERGIANT:       instability = 0.85f; break;
+        case StellarPhase::SUPERNOVA:        instability = 1.00f; break;
+        case StellarPhase::PLANETARY_NEBULA: instability = 0.25f; break;
+        default: break; // enana blanca/remanente: ya colapsada, no "agonizante"
+    }
 
     float kDwarf =
         ClampF((tp - 3800.0f) / (4800.0f - 3800.0f), 0.0f, 1.0f) *
@@ -1741,8 +2550,43 @@ inline void DrawStarFlares(const Body& b, Shader& sh, const FlareShaderLocs& fl,
     rlDisableDepthMask();
     rlDisableBackfaceCulling();
 
-    // Seed determinista por estrella (misma estrella → mismo patron de arcos)
-    float starSeed = (float)(b.mass / M_SUN) * 2.618f + (float)b.temperature * 1e-4f;
+    // Seed determinista por estrella, basado en b.id (UNICO y CONSTANTE
+    // durante toda la vida del cuerpo, nunca se reusa -- ver body.h).
+    // ANTES dependia de b.mass/b.temperature: b.temperature se recalcula
+    // CADA FRAME via Stefan-Boltzmann (main.cpp) a partir de radius/
+    // luminosity, que a su vez CAMBIAN cada frame mientras una fase
+    // estelar converge (lerp exponencial en ApplyStellarPhaseProperties,
+    // stellar_evolution.h -- p.ej. mientras una supergigante se
+    // hincha/desinfla hacia su target). El cambio fisico real es
+    // infimo (fracciones de Kelvin por frame), pero el hash
+    // pseudoaleatorio de abajo (sin(x)*constante_enorme - floor(), estilo
+    // GLSL) es CAOTICAMENTE sensible a esa entrada -- un delta de medio
+    // Kelvin ya basta para que hL1/hL2 (y por tanto el periodo, la fase,
+    // la posicion y el tipo de CADA llamarada) salten a valores
+    // completamente distintos. Como esto se recalculaba cada frame
+    // mientras la estrella evolucionaba, el patron entero de llamaradas
+    // se "re-sorteaba" frame tras frame -- de ahi el parpadeo catastrofico
+    // reportado durante la evolucion, que cesaba en cuanto el lerp
+    // convergia y la temperatura dejaba de cambiar bit a bit. b.id no
+    // cambia jamas durante la vida del cuerpo (ni con fusiones -- ver
+    // MergeBodies, que conserva el id de majIdx), asi que el patron de
+    // llamaradas ahora es perfectamente estable sin importar cuanto
+    // fluctuen masa/temperatura/radio mientras tanto.
+    float starSeed = (float)((b.id * 2654435761ull) % 1000000ull) * 1e-4f;
+
+    // Reordenamiento DISCRETO del patron para estrellas inestables: cada
+    // CHAOS_EPOCH_SEC (tiempo de 'rt'/g_flareClock, que ya tiene un tope
+    // de aceleracion x4 incluso a velocidad de simulacion maxima -- ver
+    // main.cpp) el patron entero "salta" a una variante nueva, escalado
+    // por 'instability' (0 para estrellas estables -> epoch siempre
+    // aporta 0, sin cambios). Para estrellas inestables esto se ve como
+    // turbulencia real (el patron cambia visiblemente cada pocos
+    // segundos) sin reintroducir el parpadeo frame-a-frame original,
+    // porque dentro de cada epoch el patron vuelve a ser perfectamente
+    // estable.
+    const float CHAOS_EPOCH_SEC = 6.0f;
+    float chaosEpoch = floorf(rt / CHAOS_EPOCH_SEC) * instability * 53.731f;
+    float effSeed = starSeed + chaosEpoch;
     // Cantidad de arcos segun actividad: 5 base + hasta 7 extra
     // M: muchas llamaradas. K: intermedio. G/Sol: más estable.
     // Slots visibles potenciales.
@@ -1768,24 +2612,37 @@ inline void DrawStarFlares(const Body& b, Shader& sh, const FlareShaderLocs& fl,
         float fi = (float)i;
 
         // Hashes de ciclo de vida: constantes por llamarada (cada una tiene su propio periodo)
-        float hL1    = hh(sinf(fi * 127.1f + starSeed) * 43758.5f);
-        float hL2    = hh(sinf(fi * 311.7f + starSeed * 1.3f) * 23419.7f);
-        float period = 18.0f + hL1 * 34.0f;             // base tranquila
+        float hL1    = hh(sinf(fi * 127.1f + effSeed) * 43758.5f);
+        float hL2    = hh(sinf(fi * 311.7f + effSeed * 1.3f) * 23419.7f);
+        // ANTES: base 18-52s, hasta 91s para G/Sol (x1.75) -- con el tope
+        // de aceleracion x4 de g_flareClock (main.cpp, incluso a velocidad
+        // de simulacion maxima), una llamarada de una estrella tranquila
+        // tardaba como MINIMO ~20s reales en nacer-vivir-morir, y la
+        // probabilidad de presencia (mas abajo) la dejaba ausente buena
+        // parte de ese tiempo -- demasiado lento/raro para una escala de
+        // tiempo jugable. Base bajada a 5-14s, penalizacion de G/Sol
+        // reducida a x1.4 (antes x1.75): sigue siendo notablemente mas
+        // calma que una M activa, pero deja de sentirse "congelada".
+        float period = 5.0f + hL1 * 9.0f;
         period *= (1.0f - mDwarf * 0.62f);              // enanas rojas: más frecuente
-        period *= (1.0f + gDwarf * 0.75f);              // tipo Sol/G: más intervalo
-        period = std::max(4.0f, period);
+        period *= (1.0f + gDwarf * 0.40f);              // tipo Sol/G: algo mas pausado
+        period = std::max(2.0f, period);
         float phase  = fmodf(rt / period + hL2, 1.0f);  // fraccion dentro del ciclo actual
 
         // Cada ciclo de vida es un EVENTO nuevo.
         // Antes: la posicion dependia solo de i + starSeed -> misma llamarada eterna.
-        // Ahora: i + cycleId + starSeed -> misma durante el ciclo, distinta al renacer.
+        // Ahora: i + cycleId + effSeed -> misma durante el ciclo, distinta al renacer
+        // (o al saltar de epoch de caos, en estrellas inestables).
         float cycleId = floorf(rt / period + hL2);
-        float eventSeed = starSeed + fi * 37.173f + cycleId * 91.731f;
+        float eventSeed = effSeed + fi * 37.173f + cycleId * 91.731f;
 
-        // Probabilidad de que este evento realmente exista.
-        // En el Sol: varios slots posibles, pero no todos activos a la vez.
-        // En M/K activas: más eventos simultáneos.
-        float eventPresence = ClampF(0.42f + spectralAct * 0.45f + mDwarf * 0.28f + kDwarf * 0.10f - gDwarf * 0.08f, 0.25f, 0.95f);
+        // Probabilidad de que este evento realmente exista. ANTES (base
+        // 0.42, piso 0.25) dejaba estrellas tranquilas (G/Sol, spectralAct
+        // bajo) ausentes la mayor parte del tiempo ("casi nunca" salen) --
+        // base y piso subidos para que una estrella calma siga teniendo
+        // llamaradas visibles con regularidad, solo que menos numerosas/
+        // intensas que una M activa.
+        float eventPresence = ClampF(0.55f + spectralAct * 0.40f + mDwarf * 0.25f + kDwarf * 0.10f - gDwarf * 0.05f, 0.35f, 0.95f);
         float hPresence = hh(sinf(eventSeed * 151.7f + 12.9f) * 76123.45f);
         if (hPresence > eventPresence) continue;
 
@@ -1796,13 +2653,25 @@ inline void DrawStarFlares(const Body& b, Shader& sh, const FlareShaderLocs& fl,
         // Fase 3: colapso por escala geometrica, arco se encoge hacia la estrella (35%)
         float flareGrow, lifeScale, flareFade;
 
+        // Guardamos si está muriendo para poder cambiar el tipo de muerte después,
+        // cuando ya sepamos si el flare es arco regular, jet o puff.
+        bool isDying = false;
+        float deathT = 0.0f;
+
         if (phase < 0.35f) {
-            // Nacimiento: se revela desde el pie.
+            // Nacimiento: se revela desde un pie.
             flareGrow = phase / 0.35f;
             lifeScale = 1.0f;
-
-            // Fade-in suave para que no aparezca de golpe.
-            flareFade = ss(0.00f, 0.10f, phase);
+            // ANTES: flareFade llegaba a 1.0 en solo el 10% del periodo, MUCHO
+            // mas rapido que flareGrow (35% del periodo) -- como el pie del
+            // arco (footAlpha en el shader) ya brilla a maxima intensidad
+            // justo en el extremo revelado, el resultado era que la
+            // llamarada llegaba a brillo PLENO casi de inmediato, mientras
+            // el resto de la geometria seguia creciendo en silencio: se veia
+            // como un "pop" a brillo completo en vez de una aparicion
+            // gradual. Igualando flareFade a flareGrow, el brillo global
+            // crece exactamente al mismo ritmo que la revelacion geometrica.
+            flareFade = flareGrow;
         }
         else if (phase < 0.65f) {
             // Vida plena.
@@ -1811,15 +2680,12 @@ inline void DrawStarFlares(const Body& b, Shader& sh, const FlareShaderLocs& fl,
             flareFade = 1.0f;
         }
         else {
-            // Muerte: mantiene forma general, pero se deshace visualmente.
+            // Muerte base: por defecto, colapsa hacia la estrella como antes.
+            isDying = true;
+            deathT = (phase - 0.65f) / 0.35f;
+
             flareGrow = 1.0f;
-
-            float deathT = (phase - 0.65f) / 0.35f;
-
-            // Encogimiento moderado, no desaparición instantánea.
             lifeScale = 1.0f - ss(0.15f, 1.0f, deathT) * 0.65f;
-
-            // Transparencia fuerte hacia el final.
             flareFade = 1.0f - ss(0.00f, 1.0f, deathT);
         }
         if (flareGrow < 0.02f) continue;
@@ -1827,6 +2693,12 @@ inline void DrawStarFlares(const Body& b, Shader& sh, const FlareShaderLocs& fl,
 
         SetShaderValue(sh, fl.flareGrow, &flareGrow, SHADER_UNIFORM_FLOAT);
         SetShaderValue(sh, fl.flareFade, &flareFade, SHADER_UNIFORM_FLOAT);
+
+        float flareDrainMode = 0.0f;
+        float flareDrainStart = 0.0f;
+
+        SetShaderValue(sh, fl.flareDrainMode,  &flareDrainMode,  SHADER_UNIFORM_FLOAT);
+        SetShaderValue(sh, fl.flareDrainStart, &flareDrainStart, SHADER_UNIFORM_FLOAT);
 
 
         float flareIdx = (float)i;
@@ -1892,17 +2764,40 @@ inline void DrawStarFlares(const Body& b, Shader& sh, const FlareShaderLocs& fl,
         // Distribución por tipo estelar:
         // G/Sol: arcos dominan, pocos jets/puffs.
         // M/K activas: más jets y puffs.
-        float jetChance  = ClampF(0.10f + spectralAct * 0.18f + mDwarf * 0.22f + kDwarf * 0.08f - gDwarf * 0.06f, 0.04f, 0.45f);
-        float puffChance = ClampF(0.08f + spectralAct * 0.14f + mDwarf * 0.18f + kDwarf * 0.06f - gDwarf * 0.04f, 0.03f, 0.35f);
+        // Probabilidades reducidas:
+        // Queremos que arcos/flares regulares sean claramente dominantes.
+        // 0 = arco regular
+        // 1 = jet
+        // 2 = puff
+
+        float jetChance = ClampF(
+            0.035f +
+            spectralAct * 0.055f +
+            mDwarf * 0.060f +
+            kDwarf * 0.025f -
+            gDwarf * 0.025f,
+            0.015f,
+            0.14f
+        );
+
+        float puffChance = ClampF(
+            0.025f +
+            spectralAct * 0.040f +
+            mDwarf * 0.050f +
+            kDwarf * 0.020f -
+            gDwarf * 0.020f,
+            0.010f,
+            0.11f
+        );
 
         if (hMode < jetChance) {
-            flareMode = 1.0f;
+            flareMode = 1.0f; // jet
         }
         else if (hMode < jetChance + puffChance) {
-            flareMode = 2.0f;
+            flareMode = 2.0f; // puff
         }
         else {
-            flareMode = 0.0f;
+            flareMode = 0.0f; // flare regular / arco
         }
 
         float flareAsym  = h2v;
@@ -1911,6 +2806,59 @@ inline void DrawStarFlares(const Body& b, Shader& sh, const FlareShaderLocs& fl,
         SetShaderValue(sh, fl.flareMode,  &flareMode,  SHADER_UNIFORM_FLOAT);
         SetShaderValue(sh, fl.flareAsym,  &flareAsym,  SHADER_UNIFORM_FLOAT);
         SetShaderValue(sh, fl.flareBurst, &flareBurst, SHADER_UNIFORM_FLOAT);
+
+        // Muerte alternativa SOLO para flares regulares/arcos.
+        // Algunos colapsan como antes, otros se drenan siguiendo el arco,
+        // como si dejara de salir material y el plasma se reabsorbiera por el otro pie.
+        if (flareMode == 0.0f && isDying) {
+            float hDeath = hh(sinf(eventSeed * 1201.7f + 8.6f) * 91821.37f);
+
+            // Ajusta esta probabilidad:
+            // 0.0 = ninguno se drena
+            // 0.5 = mitad colapsa, mitad se drena
+            // 1.0 = todos se drenan
+            bool reverseDrainDeath = (hDeath < 0.55f);
+
+            if (reverseDrainDeath) {
+                float d = ss(0.00f, 1.0f, deathT);
+
+                // IMPORTANTE:
+                // No bajamos flareGrow. flareGrow recorta desde el lado equivocado.
+                // Para drenar hacia el segundo pie, usamos un modo nuevo del shader:
+                // visible solo si uv.x >= flareDrainStart.
+                flareGrow = 1.0f;
+                flareDrainMode = 1.0f;
+                flareDrainStart = d;
+
+                // No colapsa geométricamente hacia la estrella.
+                // Mantiene el arco y se va vaciando hacia el pie final.
+                lifeScale = 1.0f;
+
+                // ANTES: el fade global se quedaba en 1.0 (brillo pleno) hasta
+                // el 82% de deathT y solo se apagaba en el 18% final -- en un
+                // periodo corto eso son fracciones de segundo, así que la
+                // llamarada parecía desaparecer de golpe en vez de drenarse.
+                // Ahora el fade global acompaña TODO el rango de deathT, igual
+                // que en la muerte por colapso -- el drenaje geometrico
+                // (flareDrainStart, arriba) sigue dando la sensacion de
+                // "vaciarse hacia el segundo pie", pero ya no depende de un
+                // fade que llega tarde para que se note gradual.
+                flareFade = 1.0f - ss(0.00f, 1.0f, deathT);
+
+                SetShaderValue(sh, fl.flareGrow,       &flareGrow,       SHADER_UNIFORM_FLOAT);
+                SetShaderValue(sh, fl.flareFade,       &flareFade,       SHADER_UNIFORM_FLOAT);
+                SetShaderValue(sh, fl.flareDrainMode,  &flareDrainMode,  SHADER_UNIFORM_FLOAT);
+                SetShaderValue(sh, fl.flareDrainStart, &flareDrainStart, SHADER_UNIFORM_FLOAT);
+            }
+        }
+
+        // Las puffs no deben revelarse como un jet desde la base.
+        // Para puff, la geometría ya nace como explosión completa desde la estrella.
+        // Por eso forzamos flareGrow a 1.0 y dejamos que aparezca/desaparezca con flareFade.
+        if (flareMode == 2.0f) {
+            float puffGrow = 1.0f;
+            SetShaderValue(sh, fl.flareGrow, &puffGrow, SHADER_UNIFORM_FLOAT);
+        }
 
         float heightVar = 0.65f + h6v * 0.65f;
 
@@ -1939,23 +2887,32 @@ inline void DrawStarFlares(const Body& b, Shader& sh, const FlareShaderLocs& fl,
         }
         // Puffs deben ser cortos.
         else if (flareMode == 2.0f) {
-            // Erupción fallida: grande y ancha, pero menos vertical que un jet.
-            heightMult *= 0.68f + flareBurst * 0.22f;
+            // Puff compacta: menos alta y menos enorme.
+            // La geometría ya es ancha/redonda, así que no necesitamos tanta escala vertical.
+            heightMult *= 0.46f + flareBurst * 0.10f;
         }
 
-        // Tope por modo. Antes 5.2 era demasiado bestia.
+        // Tope de altura por modo.
+        // flareMode 0 = flare regular / arco
+        // flareMode 1 = jet
+        // flareMode 2 = puff
+
         float maxHeight =
-            1.55f +
-            mDwarf * 0.40f +
-            kDwarf * 0.15f +
-            giantF * 0.20f;
+            1.05f +
+            mDwarf * 0.25f +
+            kDwarf * 0.10f +
+            giantF * 0.12f;
 
         if (flareMode == 1.0f) {
-            maxHeight *= 1.12f;
+            // Jets todavía pueden ser un poco más altos que los arcos.
+            maxHeight *= 1.10f;
         }
         else if (flareMode == 2.0f) {
-            maxHeight = std::min(maxHeight, 1.35f + flareBurst * 0.20f);
+            // Puffs más compactos.
+            maxHeight = std::min(maxHeight, 0.82f + flareBurst * 0.10f);
         }
+
+        heightMult = ClampF(heightMult, 0.08f, maxHeight);
 
 
         heightMult = ClampF(heightMult, 0.08f, maxHeight);
@@ -1970,10 +2927,26 @@ inline void DrawStarFlares(const Body& b, Shader& sh, const FlareShaderLocs& fl,
             flareModel = &puffModel;
         }
 
-        // IMPORTANTÍSIMO:
-        // Escala uniforme = radio real de la estrella.
-        // Nada de rR * widthMult en X/Y, porque eso despega las bases.
-        Vector3 flareScaleVec = { rR, rR, rR };
+        // Radio real de la superficie en la dirección 'radial', considerando
+        // achatamiento por rotación (RotationalOblateness) y elongación por
+        // marea (tideVisualElongation/Squash) -- sin esto, las llamaradas
+        // siempre nacen de una esfera perfecta aunque la estrella visual
+        // sea un elipsoide (TidalBodyTransform).
+        float obF      = RotationalOblateness(b);
+        float rEqF     = 1.0f + obF / 3.0f;
+        float rPolF    = 1.0f - 2.0f * obF / 3.0f;
+        float latFrac  = radial.y * radial.y;          // 0=ecuador, 1=polo
+        float baseR    = rR * (rEqF * (1.0f - latFrac) + rPolF * latFrac);
+
+        if (b.tideVisualElongation > 1.001f) {
+            Vector3 ta = Vector3Normalize({(float)b.tideAxis.x, (float)b.tideAxis.y, (float)b.tideAxis.z});
+            float tideProj = fabsf(Vector3DotProduct(radial, ta));
+            float tidalScale = b.tideVisualSquash
+                + (b.tideVisualElongation - b.tideVisualSquash) * tideProj * tideProj;
+            baseR *= tidalScale;
+        }
+
+        Vector3 flareScaleVec = { baseR, baseR, baseR };
 
         flareModel->transform = rot;
         DrawModelEx(*flareModel, p, {0,1,0}, 0.0f, flareScaleVec, WHITE);

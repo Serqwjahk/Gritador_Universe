@@ -21,8 +21,12 @@
 #include "physics.h"
 #include "renderer.h"
 #include "catalog.h"
+#include "solar_system_template.h"
+#include "stellar_evolution.h"
 #include "ui.h"
 #include "camera_input.h"
+#include "blackhole_renderer.h"
+#include "pulsar_renderer.h"
 
 // GUI (Dear ImGui + rlImGui)
 #include "imgui.h"
@@ -37,6 +41,9 @@ bool g_fakeLightEnabled = true;
 
 // Reloj de tiempo simulado acumulado (ver constants.h/TrailPoint en body.h)
 double g_simTime = 0.0;
+
+// Reloj de llamaradas, escalado por velocidad de simulacion (ver constants.h)
+double g_flareClock = 0.0;
 
 // Origen flotante de render (ver math_utils.h): actualizado cada frame
 // por OrbitCamera::Update() con el target actual de la cámara.
@@ -63,28 +70,75 @@ static std::vector<CosmicStar> GenerateStarfield(int count = 800) {
 }
 
 // ── Actualización de estado de estrellas y temperaturas ─────
-static void UpdateBodiesState(std::vector<Body>& bodies) {
+static void UpdateBodiesState(std::vector<Body>& bodies,
+                               std::vector<DustParticle>& dust) {
+    // Limpiar remanentes de supernova expirados (mass=-1.0 es señal interna)
+    bodies.erase(std::remove_if(bodies.begin(), bodies.end(),
+        [](const Body& b){ return b.mass < 0.0; }), bodies.end());
+
     struct StarCache { Vector3D pos; double lum; };
     std::vector<StarCache> stars;
     for (const Body& s : bodies)
-        if (s.isStar && s.luminosity > 0.0 && s.mass > 0.0)
+        if ((s.isStar || s.isSupernovaRemnant) && s.luminosity > 0.0)
             stars.push_back({s.pos, s.luminosity});
 
     for (Body& b : bodies) {
+        // Evolución estelar y pulsaciones ANTES de temperatura
+        if (b.isStar || b.isSupernovaRemnant) {
+            UpdateStellarEvolution(b, TIME_STEP, bodies, dust);
+            if (b.isStar) {
+                StellarPulsationUpdate(b, TIME_STEP);
+                // Aplicar pulsación en visualLuminosity (NUNCA acumular en base)
+                if (b.pulsationAmplitude > 0.001f)
+                    b.visualLuminosity = b.baseLuminosity
+                                       * (1.0 + b.pulsationAmplitude * std::sin(b.pulsationPhase));
+                else
+                    b.visualLuminosity = b.baseLuminosity;
+                b.luminosity = b.visualLuminosity;
+            }
+        }
+
         if (b.isStar) {
-            if (b.radius > 0.0)
+            // Temperatura DESPUÉS de evolución: usa radius/luminosity actualizados
+            if (b.radius > 0.0 && b.luminosity > 0.0)
                 b.temperature = std::pow(std::max(1e-12, b.luminosity)
                                          / (4.0*PI_D*SIGMA*b.radius*b.radius), 0.25);
-        } else {
+        } else if (!b.isSupernovaRemnant) {
             double irr = 0.0;
             for (const auto& sc : stars)
                 irr += sc.lum / (4.0*PI_D * std::max(1.0, (b.pos - sc.pos).lengthSqr()));
+            // Equilibrio de cuerpo negro puro (sin atmosfera): para la
+            // Tierra a 1 UA esto da ~255K, NO los ~288K reales -- la
+            // diferencia es el efecto invernadero de la atmosfera, que
+            // antes no se modelaba aqui. Sin este termino, 'temperature'
+            // (que relaja hacia 'equilibriumTemp' en UpdateThermodynamics,
+            // physics.h) cae por debajo de MELT_POINT (273K) para
+            // CUALQUIER planeta rocoso en zona habitable sin importar su
+            // atmosfera, congelando oceanos que deberian ser liquidos.
+            double blackbodyTeq = (irr > 0.0) ? std::pow(irr*0.7/(4.0*SIGMA), 0.25) : 3.0;
+
+            // Invernadero: usa baseAtmosphereDensity (inventario ESTATICO
+            // de gases del planeta, ver body.h) en vez de atmosphereDensity
+            // dinamica, para no crear un bucle de retroalimentacion con el
+            // vapor/invernadero descontrolado de UpdateThermodynamics.
+            // Constante calibrada para que la Tierra (baseAtmosphereDensity
+            // 0.80) llegue a ~288K partiendo de un equilibrio de cuerpo
+            // negro de ~255K.
+            constexpr double GREENHOUSE_K = 0.16;
+            double greenhouseBoost = 1.0 + GREENHOUSE_K * std::max(0.0, (double)b.baseAtmosphereDensity);
+
             // Solo fija el OBJETIVO de temperatura: 'temperature' relaja
             // hacia 'equilibriumTemp' en UpdateThermodynamics (physics.h),
             // con inercia termica -- asi un impacto puede dispararla por
             // encima de este valor sin que se sobreescriba al instante.
-            b.equilibriumTemp = (irr > 0.0) ? std::pow(irr*0.7/(4.0*SIGMA), 0.25) : 3.0;
-        }
+            b.equilibriumTemp = blackbodyTeq * greenhouseBoost;
+        } // end else if (!b.isSupernovaRemnant)
+
+        // Física de rotación crítica: mass shedding cuando criticalRotation
+        // supera el umbral del tipo de objeto. Solo si hay duración simulada
+        // real (dt = TIME_STEP > 0). Excluye remanentes SN ya disueltos.
+        if (!b.isSupernovaRemnant && b.mass > 0.0 && b.criticalRotationFraction > 0.0f)
+            ApplyRotationalBreakup(b, dust, TIME_STEP);
 
         if (b.heatSpike > 0.0f) b.heatSpike = std::max(0.0f, b.heatSpike - 0.008f);
         // Periodo de wrap = 2*PI*20 / (0.0008 * 0.04). Elegido para que el
@@ -118,7 +172,6 @@ static void SpawnBody(std::vector<Body>& bodies,
                        std::vector<DustParticle>& dustField,
                        const std::vector<CatalogItem>& db,
                        int catIdx,
-                       int& objectCounter,
                        SpawnMode mode,
                        int selectedBodyIdx,
                        const Vector3D& hitPhys,
@@ -127,77 +180,24 @@ static void SpawnBody(std::vector<Body>& bodies,
                        bool orbitRetrograde,
                        float orbitEccentricity)
 {
-    CatalogItem item     = db[(size_t)catIdx];
-    std::string baseName = item.name;
-    item.name           += " " + std::to_string(objectCounter++);
+    // El nombre mostrado es el del catalogo TAL CUAL (sin sufijo
+    // numerico): varios cuerpos pueden compartir nombre sin problema --
+    // lo que los distingue internamente es Body::id (unico, asignado al
+    // construirse, ver body.h), no el nombre. SpawnCatalogBodyWithRings
+    // ya copia b.name = item.name por su cuenta.
+    const CatalogItem& item     = db[(size_t)catIdx];
+    std::string        baseName = item.name;
 
     auto Spawn = [&](Vector3D pos, Vector3D vel, bool fixed) {
-        Body b = SpawnFromCatalog(item, baseName, pos, vel, fixed, tex);
-        b.name = item.name;
-        bodies.push_back(b);
+        // Crea el Body y le adjunta sus anillos reales si los tiene (ver
+        // SpawnCatalogBodyWithRings, solar_system_template.h) -- misma
+        // logica compartida con LoadRealisticSolarSystem, para que ambos
+        // caminos de spawn (manual y la plantilla de sistema solar) nunca
+        // diverjan.
+        SpawnCatalogBodyWithRings(bodies, dustField, item, baseName, pos, vel, fixed, tex);
+        Body& b = bodies.back();
 
-        // Gigantes gaseosos/helados: anillo de escombros 3D en orbita
-        // perpetua (isRing=true), inclinado segun el axialTilt del
-        // catalogo (ver SpawnPlanetaryRing, physics.h). Geometria real
-        // (Saturno/Jupiter/Urano/Neptuno): multiplicadores de radio sacados
-        // de las distancias reales en km de cada anillo (Wikipedia: Rings
-        // of Saturn/Jupiter/Uranus/Neptune), divididas por el radio MEDIO
-        // de catalogo de cada planeta (el que la sim realmente dibuja). Los
-        // huecos (Cassini/Roche en Saturno, etc.) son huecos REALES: no se
-        // incluye banda alguna en esos rangos, en vez de "menos densidad".
-        // 'weight' por banda aproxima el brillo/densidad real relativo
-        // (p.ej. el anillo B de Saturno se lleva ~la mitad del presupuesto
-        // total de particulas, igual que en la realidad es el mas denso).
-        // El color es el material real del anillo (silicatos/hielo/polvo),
-        // distinto del color atmosferico 'b.color' del planeta.
-        if (baseName == "Saturno") {
-            SpawnPlanetaryRings(b, dustField, {
-                { 1.149, 1.314, 0.5,  GetColor(0x4a4641ff) }, // D: muy tenue, interior
-                { 1.282, 1.580, 2.0,  GetColor(0x6e6259ff) }, // C: tenue ("crepe ring")
-                { 1.580, 2.019, 10.0, GetColor(0xc0b6a7ff) }, // B: el mas denso/brillante
-                // 2.019-2.099: Division de Cassini, hueco real (sin banda)
-                { 2.099, 2.349, 6.0,  GetColor(0x9e9281ff) }, // A: brillante
-                // 2.349-2.393: Division de Roche, hueco real (sin banda)
-                { 2.395, 2.420, 1.0,  GetColor(0xd8d2c4ff) }, // F: delgado y brillante
-                { 2.851, 3.006, 0.3,  GetColor(0x55504aff) }, // G: muy tenue
-                { 3.092, 6.000, 0.4,  GetColor(0x4a5a6eff) }, // E: tenue/difuso (recortado de 8.24x para no diluir el presupuesto)
-            }, 60000);
-        } else if (baseName == "Jupiter") {
-            SpawnPlanetaryRings(b, dustField, {
-                { 1.316, 1.753, 1.5, GetColor(0x302620ff) }, // Halo: tenue, grueso
-                { 1.745, 1.839, 3.0, GetColor(0x695543ff) }, // Main ring: el mas brillante de Jupiter
-                { 1.846, 2.604, 0.6, GetColor(0x1f1a17ff) }, // Gossamer de Amaltea: muy tenue
-                { 1.846, 3.233, 0.4, GetColor(0x16120fff) }, // Gossamer de Tebe: el mas tenue/externo
-            }, 3000);
-        } else if (baseName == "Urano") {
-            // 13 anillos reales, casi todos de pocos km de ancho
-            // (sub-pixel individualmente): agrupados en bandas
-            // representativas conservando los huecos/anchos reales.
-            SpawnPlanetaryRings(b, dustField, {
-                { 1.058, 1.631, 1.0, GetColor(0x3a3a3aff) }, // zeta: tenue, ancho, el mas interior
-                { 1.650, 1.990, 2.0, GetColor(0x4d4d4dff) }, // cluster 6/5/4/alfa/beta/eta/gamma/delta/lambda
-                { 1.990, 2.018, 4.0, GetColor(0x6b6b6bff) }, // epsilon: el mas ancho/brillante
-                // hueco real entre epsilon y nu
-                { 2.607, 2.757, 0.5, GetColor(0x2e2e2eff) }, // nu: tenue, polvoso
-                // hueco real entre nu y mu
-                { 3.391, 4.061, 0.3, GetColor(0x282828ff) }, // mu: muy tenue, polvoso (orbita de la luna Mab)
-            }, 15000);
-        } else if (baseName == "Neptuno") {
-            SpawnPlanetaryRings(b, dustField, {
-                { 1.665, 1.746, 1.5, GetColor(0x3a3f4aff) }, // Galle: tenue, ancho, el mas interior
-                // hueco real entre Galle y Le Verrier
-                { 2.159, 2.164, 2.0, GetColor(0x555c6bff) }, // Le Verrier: angosto, brillante
-                { 2.161, 2.323, 1.0, GetColor(0x3a3f4aff) }, // Lassell/plateau: ancho, tenue, toca a Le Verrier
-                { 2.321, 2.325, 1.5, GetColor(0x6b7280ff) }, // Arago: pico brillante en el borde de Lassell
-                // hueco real entre Lassell/Arago y Adams
-                // Adams: simplificado SIN sus 5 arcos discretos reales
-                // (Fraternite, Egalite 1&2, Liberte, Courage, mantenidos por
-                // resonancia con la luna Galatea) -- no son estables como
-                // disco uniforme en este motor de gravedad restringida de
-                // particulas; se renderiza como anillo angosto continuo.
-                { 2.595, 2.601, 3.0, GetColor(0x7a8190ff) }, // Adams: angosto, el mas brillante de Neptuno
-            }, 10000);
-        } else if (baseName == "Gigante Procedural") {
+        if (baseName == "Gigante Procedural") {
             // Gigante aleatorio: 50% de probabilidad de tener anillos.
             // Geometria (radio interior/exterior, huecos, densidad de
             // particulas) aleatoria dentro de los rangos que cubren los
@@ -362,6 +362,14 @@ int main() {
     rlImGuiSetup(true);
     ApplyDarkTheme();
 
+    // ── Renderer de Pulsares / Magnetares (jets volumetricos + haz) ──
+    GetPulsarRenderer().Init();
+
+    // ── Renderer de Agujero Negro (BH shader + cubemap + bloom + ACES) ──
+    // Cargado DESPUES de rlImGuiSetup para que el contexto OpenGL este
+    // completamente inicializado antes de crear los FBOs y shaders.
+    GetBlackholeRenderer().Init(windowWidth, windowHeight);
+
     // ── Recursos gráficos ──
     TextureStore texStore;
     texStore.Load();
@@ -386,7 +394,13 @@ int main() {
     flareShader.locs[SHADER_LOC_MATRIX_MVP]        = GetShaderLocation(flareShader, "mvp");
     FlareShaderLocs fLocs = GetFlareShaderLocs(flareShader);
 
-    Mesh archMesh = GenMeshArchRibbon(0.85f, 0.55f, 0.35f, 16);
+    // GenMeshArchTube reemplaza a GenMeshArchRibbon: seccion circular
+    // (tubo 3D) en lugar de ribbon plano. Mismo arco, mismo shader —
+    // las llamaradas estelares y los filamentos del magnetar se ven
+    // redondos desde cualquier angulo en vez de planos.
+    // Parametros: archHeight=0.85, phiHalf=0.55, tubeRadius=0.08,
+    //             segs=16, sides=8 (octogono → muy circular con glow)
+    Mesh archMesh = GenMeshArchTube(0.85f, 0.55f, 0.08f, 16, 8);
     Model archModel = LoadModelFromMesh(archMesh);
     archModel.materials[0].shader = flareShader;
 
@@ -407,7 +421,7 @@ int main() {
     rockMaterial.maps[MATERIAL_MAP_DIFFUSE].color = {150, 140, 130, 255};
 
     // ── Skybox (Vía Láctea, panorámica 2D equirrectangular) ──
-    Image skyImg = LoadImage("2k_stars_milky_way.jpg");
+    Image skyImg = LoadImage("2k_stars_milky_way.png");
     Texture2D skyboxTex = LoadTextureFromImage(skyImg);
     UnloadImage(skyImg);
 
@@ -425,7 +439,6 @@ int main() {
     InputState  input;
     GuiState    guiState;
     int catIdx       = 0;
-    int objectCounter = 1;
 
     // Para doble-click de selección
     float lastClickTime  = -1.0f;
@@ -441,16 +454,37 @@ int main() {
         input.HandleKeys(bodies, dustField);
 
         // Cámara
+        // HandleRotation corre SIEMPRE (uiBlocksStart solo impide EMPEZAR
+        // un arrastre nuevo sobre la UI) -- así nunca se queda el cursor
+        // capturado si el mouse pasa sobre un panel a mitad de un
+        // arrastre ya iniciado. HandleZoom si se queda gateado: hacer
+        // zoom mientras el mouse esta sobre un panel (p.ej. arrastrando
+        // un slider) no debe mover la camara 3D.
+        orbitCam.HandleRotation(mouseOverUI);
         if (!mouseOverUI) {
-            orbitCam.HandleRotation();
             orbitCam.HandleZoom();
         }
+        // Vuelo libre (WASD/QE): independiente del mouse, se bloquea si el
+        // teclado esta "ocupado" por un campo de texto de ImGui (p.ej.
+        // renombrando un cuerpo en el inspector) O si se esta siguiendo
+        // un cuerpo (ese cuerpo es el pivot -- ver HandlePan,
+        // camera_input.h -- mirar alrededor sigue andando con
+        // boton-derecho + rueda).
+        orbitCam.HandlePan(input.followSelected, ImGui::GetIO().WantCaptureKeyboard);
         if (input.followSelected && input.selectedBodyIdx >= 0
             && input.selectedBodyIdx < (int)bodies.size()
             && bodies[(size_t)input.selectedBodyIdx].mass > 0.0)
         {
-            orbitCam.TrackBody(bodies[(size_t)input.selectedBodyIdx]);
+            // Mientras dura el vuelo de enfoque (FocusOn), redirigir el
+            // objetivo al cuerpo (que puede seguir moviendose) en vez de
+            // pisarlo con un snap exacto -- una vez que el vuelo termina
+            // (orbitCam.flying == false), volver al seguimiento exacto
+            // cuadro a cuadro de siempre (sin esto, un cuerpo en orbita
+            // rapida se "escapa" de un seguimiento suave por lag real).
+            if (orbitCam.flying) orbitCam.flyTargetGoal = bodies[(size_t)input.selectedBodyIdx].pos;
+            else                 orbitCam.TrackBody(bodies[(size_t)input.selectedBodyIdx]);
         }
+        orbitCam.UpdateFlight(GetFrameTime());
         orbitCam.Update();
 
         // Raycast plano Y=0
@@ -466,18 +500,27 @@ int main() {
                 bool isDouble = (hitBody >= 0 && hitBody == lastClickBody && (now - lastClickTime) < 0.35f);
                 if (hitBody >= 0) {
                     input.selectedBodyIdx = hitBody;
+                    input.selectedBodyId  = bodies[(size_t)hitBody].id;
                     if (isDouble) input.followSelected = true;
+                    orbitCam.FocusOn(bodies[(size_t)hitBody].pos, bodies[(size_t)hitBody].radius);
                 } else {
                     input.selectedBodyIdx = -1;
+                    input.selectedBodyId  = 0;
                     input.followSelected  = false;
                 }
                 lastClickTime = now;
                 lastClickBody = hitBody;
             } else {
-                SpawnBody(bodies, dustField, Database, catIdx, objectCounter,
+                SpawnBody(bodies, dustField, Database, catIdx,
                           input.mode, input.selectedBodyIdx, hitPhys,
                           orbitCam.cam, tex,
                           input.orbitRetrograde, input.orbitEccentricity);
+                // SpawnBody siempre agrega exactamente 1 Body (los anillos
+                // van a dustField, no a 'bodies') -- ver
+                // SpawnCatalogBodyWithRings, asi que el recien colocado
+                // siempre es bodies.back().
+                if (!bodies.empty())
+                    orbitCam.FocusOn(bodies.back().pos, bodies.back().radius);
             }
         }
 
@@ -485,10 +528,34 @@ int main() {
         if (!input.paused) {
             StepPhysics(bodies, dustField, TIME_STEP);
             g_simTime += TIME_STEP;
+            // Tope x4: una llamarada real dura minutos/horas, una escala TOTALMENTE
+            // distinta a la evolucion estelar (millones de años) -- escalar el reloj
+            // de llamaradas 1:1 con TIME_STEP funciona en cámara lenta (las frena,
+            // bien) pero en FAST-FORWARD alto (128x+) comprime el nacimiento/muerte
+            // de una llamarada (35% del periodo, ~5-20s) a una fraccion de UN frame
+            // real -- aparecen y desaparecen "de la nada" en vez de animarse. Un
+            // tope de aceleracion (sin tope de frenado) evita el flash sin perder el
+            // frenado correcto en cámara lenta.
+            g_flareClock += GetFrameTime() * std::min(4.0, TIME_STEP / 1200.0);
 
-            if (input.selectedBodyIdx >= (int)bodies.size())
-                input.selectedBodyIdx = (int)bodies.size() - 1;
-            UpdateBodiesState(bodies);
+            // Re-resolver la seleccion por ID estable: StepPhysics puede
+            // haber borrado cuerpos (fusiones, supernovas, limpieza de
+            // remanentes) en CUALQUIER posicion del vector, desplazando los
+            // indices posteriores -- selectedBodyIdx ya no es de fiar tal
+            // cual. Buscar por id evita que el inspector/camara terminen
+            // mirando un cuerpo distinto al que el jugador eligio.
+            if (input.selectedBodyId != 0) {
+                int foundIdx = -1;
+                for (int i = 0; i < (int)bodies.size(); ++i) {
+                    if (bodies[(size_t)i].id == input.selectedBodyId) { foundIdx = i; break; }
+                }
+                input.selectedBodyIdx = foundIdx;
+                if (foundIdx < 0) {
+                    input.selectedBodyId  = 0;
+                    input.followSelected  = false;
+                }
+            }
+            UpdateBodiesState(bodies, dustField);
 
             // Vuelve a centrar la camara con la posicion YA actualizada del
             // cuerpo seguido. Sin esto, a velocidades de simulacion altas
@@ -498,8 +565,15 @@ int main() {
                 && input.selectedBodyIdx < (int)bodies.size()
                 && bodies[(size_t)input.selectedBodyIdx].mass > 0.0)
             {
-                orbitCam.TrackBody(bodies[(size_t)input.selectedBodyIdx]);
-                orbitCam.Update();
+                // Igual que arriba: si todavia esta en vuelo de enfoque, solo
+                // refrescar el objetivo (la posicion post-fisica mas fresca)
+                // sin pisar el suavizado con un snap exacto a mitad de vuelo.
+                if (orbitCam.flying) {
+                    orbitCam.flyTargetGoal = bodies[(size_t)input.selectedBodyIdx].pos;
+                } else {
+                    orbitCam.TrackBody(bodies[(size_t)input.selectedBodyIdx]);
+                    orbitCam.Update();
+                }
             }
         }
 
@@ -512,31 +586,23 @@ int main() {
         // permitir zoom arbitrariamente cercano (asteroides, etc.) sin
         // que la geometria se recorte contra el plano cercano.
         float nearPlane = std::max(0.0001f, orbitCam.radius * 0.001f);
-        rlSetClipPlanes(nearPlane, 80000.0f);
+        // Far plane adaptativo: la grilla se extiende ~radius*5*sqrt(2) draw units desde
+        // la cámara en la diagonal, más el offset por la posición de la cámara (~radius).
+        // radius*10 cubre ese máximo con margen holgado sin degradar la precisión del Z-buffer
+        // (ratio near/far ~10000 para radius grande → 24-bit Z-buffer sin artefactos).
+        float farPlane  = std::max(80000.0f, orbitCam.radius * 10.0f + 80000.0f);
+        rlSetClipPlanes(nearPlane, farPlane);
 
-        // Skybox Vía Láctea (2D equirrectangular, sigue la orientación de la cámara)
-        {
-            Vector3 fwd = Vector3Normalize(Vector3Subtract(orbitCam.cam.target, orbitCam.cam.position));
-            float yaw     = atan2f(fwd.x, -fwd.z);
-            float pitch   = asinf(std::max(-0.999f, std::min(0.999f, fwd.y)));
-            float vFovRad = orbitCam.cam.fovy * DEG2RAD;
-            float hFovRad = 2.0f * atanf(tanf(vFovRad * 0.5f) * (float)sw / (float)sh);
-            float uC = fmodf(yaw / (2.0f * 3.14159265f) + 1.5f, 1.0f);
-            float vC = 0.5f - pitch / 3.14159265f;
-            float uS = hFovRad / (2.0f * 3.14159265f);
-            float vS = vFovRad / 3.14159265f;
-            float uL = uC - uS * 0.5f,  uR = uL + uS;
-            float srcY = (vC - vS * 0.5f) * (float)skyboxTex.height;
-            float srcH = vS * (float)skyboxTex.height;
-            auto drawStrip = [&](float u0, float u1, float x0, float x1) {
-                DrawTexturePro(skyboxTex,
-                    {u0*(float)skyboxTex.width, srcY, (u1-u0)*(float)skyboxTex.width, srcH},
-                    {x0, 0.0f, x1-x0, (float)sh}, {0.0f,0.0f}, 0.0f, WHITE);
-            };
-            if      (uL < 0.0f) { float s = (-uL)/uS; drawStrip(uL+1.0f,1.0f,0.0f,s*sw); drawStrip(0.0f,uR,s*sw,(float)sw); }
-            else if (uR > 1.0f) { float s = (1.0f-uL)/uS; drawStrip(uL,1.0f,0.0f,s*sw); drawStrip(0.0f,uR-1.0f,s*sw,(float)sw); }
-            else                { drawStrip(uL, uR, 0.0f, (float)sw); }
-        }
+        // ── Captura de la escena a textura para post-proceso BH ──
+        // Toda la escena (skybox + 3D) se renderiza al sceneRT de
+        // BlackholeRenderer. Despues de EndSceneCapture, BlitWithBHDistortion
+        // la vuelca al framebuffer principal con la distorsion UV alrededor
+        // de cualquier agujero negro presente, o sin distorsion si no hay BH.
+        // El GUI/HUD se dibuja ENCIMA del resultado, sin distorsionarse.
+        GetBlackholeRenderer().BeginSceneCapture();
+
+        // Skybox cubemap (nebulosa oscura) — siempre activo como fondo
+        GetBlackholeRenderer().DrawCubemapSkybox(orbitCam.cam);
 
         BeginMode3D(orbitCam.cam);
 
@@ -556,11 +622,7 @@ int main() {
         // se desplazaba CON él, dando la ilusión óptica de que el cuerpo
         // seguido estaba quieto y el resto del universo se movía.
         {
-            // Sin piso fijo: el tamano de celda escala siempre con el radio
-            // de la camara (igual que el nearPlane dinamico), asi que al
-            // enfocar un cuerpo pequeno (Marte, Ceres) las celdas se achican
-            // con el. halfExt = spacing*50 mantiene el numero de lineas
-            // dibujadas constante (~101 por eje) sea cual sea spacing.
+            // halfExt = spacing*50: ~101 líneas por eje, constante sin importar el spacing.
             float  halfRaw     = orbitCam.radius * 5.0f;
             float  spacing     = std::pow(10.0f, std::ceil(std::log10(halfRaw / 50.0f) - 0.001f));
             double spacingPhys = (double)spacing / RENDER_SCALE;
@@ -569,13 +631,43 @@ int main() {
             double cxPhys = std::floor(g_renderOrigin.x / spacingPhys) * spacingPhys;
             double czPhys = std::floor(g_renderOrigin.z / spacingPhys) * spacingPhys;
 
-            Color gc = Fade(GetColor(0x4a5fc9ff), 0.35f);
+            // Grilla con fade 2D: cada línea se divide en GRID_SEGS segmentos por mitad para
+            // aplicar dos fades independientes:
+            //   fadePos: por la POSICIÓN de la línea en la grilla (lejos del centro = transparente)
+            //   fadeDepth: por la PROFUNDIDAD del segmento a lo largo de la línea (lejos del centro
+            //              a lo largo de la propia línea = transparente)
+            // Sin esto, DrawLine3D acepta un solo color por línea, así que las líneas en una
+            // dirección se desvanecen (las lejanas en posición) pero las de la otra dirección
+            // llegan al horizonte a plena opacidad aunque estén centradas en la grilla.
+            constexpr int GRID_SEGS = 8;  // por mitad de línea (16 segmentos totales)
+            double segLen = halfExtPhys / GRID_SEGS;
+
             rlSetLineWidth(1.5f);
             for (double gx = -halfExtPhys; gx <= halfExtPhys; gx += spacingPhys) {
-                DrawLine3D(ToDrawPos({cxPhys + gx, 0.0, czPhys - halfExtPhys}),
-                           ToDrawPos({cxPhys + gx, 0.0, czPhys + halfExtPhys}), gc);
-                DrawLine3D(ToDrawPos({cxPhys - halfExtPhys, 0.0, czPhys + gx}),
-                           ToDrawPos({cxPhys + halfExtPhys, 0.0, czPhys + gx}), gc);
+                float normPos = (float)(std::abs(gx) / halfExtPhys);
+                float tPos    = std::max(0.0f, 1.0f - normPos * 1.5f);
+                float fadePos = tPos * tPos;
+                if (fadePos < 0.001f) continue;
+
+                // Líneas paralelas al eje Z (posicionadas en X = cxPhys+gx)
+                for (int si = -GRID_SEGS; si < GRID_SEGS; si++) {
+                    double zS   = czPhys + si * segLen;
+                    float normZ = (float)(std::abs(zS + segLen * 0.5 - czPhys) / halfExtPhys);
+                    float tZ    = std::max(0.0f, 1.0f - normZ * 1.5f);
+                    DrawLine3D(ToDrawPos({cxPhys + gx, 0.0, zS}),
+                               ToDrawPos({cxPhys + gx, 0.0, zS + segLen}),
+                               Fade(GetColor(0x4a5fc9ff), 0.35f * fadePos * tZ * tZ));
+                }
+
+                // Líneas paralelas al eje X (posicionadas en Z = czPhys+gx)
+                for (int si = -GRID_SEGS; si < GRID_SEGS; si++) {
+                    double xS   = cxPhys + si * segLen;
+                    float normX = (float)(std::abs(xS + segLen * 0.5 - cxPhys) / halfExtPhys);
+                    float tX    = std::max(0.0f, 1.0f - normX * 1.5f);
+                    DrawLine3D(ToDrawPos({xS, 0.0, czPhys + gx}),
+                               ToDrawPos({xS + segLen, 0.0, czPhys + gx}),
+                               Fade(GetColor(0x4a5fc9ff), 0.35f * fadePos * tX * tX));
+                }
             }
             rlSetLineWidth(1.0f);
         }
@@ -605,8 +697,12 @@ int main() {
                 DrawBody(bodies[i], orbitCam.cam, bodies, planetModel, *tex.blank,
                          input.selectedBodyIdx, i, input.paused, lightingShader, sLocs);
         // Planetas y demás después: se dibujan encima de la estrella si están más cerca.
+        // Los agujeros negros (BLACK_HOLE) se OMITEN aqui: el shader de post-proceso
+        // pinta el horizonte negro directamente en el framebuffer, evitando que la
+        // esfera negra de la escena se propague hacia fuera al distorsionar la textura.
         for (int i = 0; i < (int)bodies.size(); ++i)
-            if (!bodies[i].isStar)
+            if (!bodies[i].isStar
+                && bodies[i].stellarPhase != StellarPhase::BLACK_HOLE)
                 DrawBody(bodies[i], orbitCam.cam, bodies, planetModel, *tex.blank,
                          input.selectedBodyIdx, i, input.paused, lightingShader, sLocs);
 
@@ -614,6 +710,19 @@ int main() {
         for (int i = 0; i < (int)bodies.size(); ++i)
             if (bodies[i].isStar)
                 DrawStarFlares(bodies[i], flareShader, fLocs, archModel, jetModel, puffModel, 12);
+
+        // Jets polares de pulsares: dos jets permanentes alineados con el eje
+        // de rotacion real del pulsar (cambia con axialTilt y rotationAngle).
+        for (int i = 0; i < (int)bodies.size(); ++i)
+            if (bodies[i].isStar)
+                DrawPulsarPolarJets(bodies[i], flareShader, fLocs, jetModel);
+
+        // Campo magnetico + jets polares del magnetar: cientos de filamentos
+        // curvos dipolares con turbulencia + jets anchos y cortos.
+        for (int i = 0; i < (int)bodies.size(); ++i)
+            if (bodies[i].isStar)
+                DrawMagnetarEffect(bodies[i], flareShader, fLocs, archModel, jetModel);
+
 
         // Campo de escombros 3D: rocas low-poly instanciadas (un draw call)
         DrawDustField3D(dustField, bodies, rockMesh, rockMaterial, rkLocs, orbitCam.cam);
@@ -625,6 +734,17 @@ int main() {
                               input.orbitEccentricity);
 
         EndMode3D();
+
+        GetBlackholeRenderer().EndSceneCapture();
+
+        // Vuelca la escena al framebuffer — si hay un BH aplica la
+        // distorsion de UV; si no, blit directo sin shader.
+        GetBlackholeRenderer().BlitWithBHDistortion(bodies, orbitCam.cam);
+
+        // Rotulos de nombre por cuerpo (ver DrawBodyNameLabels, renderer.h):
+        // texto 2D, debe ir DESPUES de EndMode3D(). No se distorsionan.
+        DrawBodyNameLabels(bodies, orbitCam.cam);
+
 
         // UI (Dear ImGui / rlImGui)
         rlImGuiBegin();
@@ -647,14 +767,36 @@ int main() {
             input.mode = MODE_SELECT;
 
         if (input.selectedBodyIdx >= 0 && input.selectedBodyIdx < (int)bodies.size())
-            DrawObjectInspector(guiState, bodies[(size_t)input.selectedBodyIdx], bodies, input.selectedBodyIdx);
+            DrawObjectInspector(guiState, bodies[(size_t)input.selectedBodyIdx], bodies);
+
         DrawMainMenu(guiState, bodies, dustField, orbitCam, input);
+        DrawObjectSearchPanel(guiState, input, orbitCam, bodies);
+
+        // Plantilla "Sistema Solar Realista" confirmada (ver DrawMainMenu,
+        // gui.h): se ejecuta aqui, no en gui.h, porque necesita Database/
+        // tex (gui.h se mantiene sin esa dependencia). Reinicia camara/
+        // seleccion igual que ResetSimulation.
+        if (guiState.requestLoadRealisticSystem) {
+            LoadRealisticSolarSystem(bodies, dustField, Database, tex);
+            input.selectedBodyIdx = -1;
+            input.selectedBodyId  = 0;
+            input.followSelected  = false;
+            orbitCam.radius = 30.0f;
+            orbitCam.angleX = 0.4f;
+            orbitCam.angleY = 0.35f;
+            orbitCam.target = {0, 0, 0};
+            orbitCam.Update();
+            guiState.requestLoadRealisticSystem = false;
+        }
+
         rlImGuiEnd();
 
         EndDrawing();
     }
 
     // ── Limpieza ──
+    GetPulsarRenderer().Unload();
+    GetBlackholeRenderer().Unload();
     UnloadModel(archModel);
     UnloadModel(jetModel);
     UnloadModel(puffModel);

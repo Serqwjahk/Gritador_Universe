@@ -1,0 +1,159 @@
+{
+  "metadata": {
+    "version": "solar_system_orbital_inclinations_only_2026-06-29",
+    "language": "es",
+    "purpose": "JSON nuevo y mínimo para añadir inclinaciones orbitales a un simulador; no contiene composición, atmósfera, masas ni distancias completas.",
+    "angle_units": "degrees",
+    "reference_note": "Para cuerpos heliocéntricos, inclination_deg es inclinación respecto a la eclíptica/J2000 cuando aplica. Para satélites, inclination_deg sigue el frame indicado por JPL Planetary Satellite Mean Elements; muchos satélites regulares usan frame Laplace, la Luna usa ecliptic.",
+    "source_basis": [
+      "NASA/JPL Approximate Positions of the Planets / Keplerian elements",
+      "NASA/JPL Planetary Satellite Mean Elements",
+      "IAU Minor Planet Center dwarf planet orbital elements",
+      "NASA/JPL Small-Body Database / Horizons where available"
+    ]
+  },
+  "orbital_inclinations": {
+    "Sun": {
+      "inclination_deg": 0.0,
+      "reference_plane": "simulation_origin",
+      "notes": "Cuerpo central; sin órbita heliocéntrica en este modelo."
+    },
+    "Mercury": {
+      "inclination_deg": 7.00497902,
+      "reference_plane": "ecliptic_J2000",
+      "source_quality": "JPL_planetary_elements"
+    },
+    "Venus": {
+      "inclination_deg": 3.39467605,
+      "reference_plane": "ecliptic_J2000",
+      "source_quality": "JPL_planetary_elements"
+    },
+    "Earth": {
+      "inclination_deg": -0.00001531,
+      "reference_plane": "ecliptic_J2000",
+      "source_quality": "JPL_planetary_elements",
+      "simulator_safe_value_deg": 0.0
+    },
+    "Mars": {
+      "inclination_deg": 1.84969142,
+      "reference_plane": "ecliptic_J2000",
+      "source_quality": "JPL_planetary_elements"
+    },
+    "Jupiter": {
+      "inclination_deg": 1.30439695,
+      "reference_plane": "ecliptic_J2000",
+      "source_quality": "JPL_planetary_elements"
+    },
+    "Saturn": {
+      "inclination_deg": 2.48599187,
+      "reference_plane": "ecliptic_J2000",
+      "source_quality": "JPL_planetary_elements"
+    },
+    "Uranus": {
+      "inclination_deg": 0.77263783,
+      "reference_plane": "ecliptic_J2000",
+      "source_quality": "JPL_planetary_elements"
+    },
+    "Neptune": {
+      "inclination_deg": 1.77004347,
+      "reference_plane": "ecliptic_J2000",
+      "source_quality": "JPL_planetary_elements"
+    },
+    "Moon": {
+      "inclination_deg": 5.16,
+      "reference_plane": "ecliptic",
+      "source_quality": "JPL_satellite_mean_elements"
+    },
+    "Mars_Moon_Phobos": {
+      "inclination_deg": 1.1,
+      "reference_plane": "Mars_Laplace_plane",
+      "source_quality": "JPL_satellite_mean_elements"
+    },
+    "Mars_Moon_Deimos": {
+      "inclination_deg": 1.8,
+      "reference_plane": "Mars_Laplace_plane",
+      "source_quality": "JPL_satellite_mean_elements"
+    },
+    "Ceres": {
+      "inclination_deg": 10.6,
+      "reference_plane": "ecliptic",
+      "source_quality": "MPC_official_rounded"
+    },
+    "Jupiter_Moon_Io": {
+      "inclination_deg": 0.0,
+      "reference_plane": "Jupiter_Laplace_plane",
+      "source_quality": "JPL_satellite_mean_elements"
+    },
+    "Jupiter_Moon_Europa": {
+      "inclination_deg": 0.5,
+      "reference_plane": "Jupiter_Laplace_plane",
+      "source_quality": "JPL_satellite_mean_elements"
+    },
+    "Jupiter_Moon_Ganymede": {
+      "inclination_deg": 0.2,
+      "reference_plane": "Jupiter_Laplace_plane",
+      "source_quality": "JPL_satellite_mean_elements"
+    },
+    "Jupiter_Moon_Callisto": {
+      "inclination_deg": 0.3,
+      "reference_plane": "Jupiter_Laplace_plane",
+      "source_quality": "JPL_satellite_mean_elements"
+    },
+    "Saturn_Moon_Titan": {
+      "inclination_deg": 0.3,
+      "reference_plane": "Saturn_Laplace_plane",
+      "source_quality": "JPL_satellite_mean_elements"
+    },
+    "Neptune_Moon_Triton": {
+      "inclination_deg": 156.865,
+      "reference_plane": "Neptune_equator_or_Laplace_approx",
+      "source_quality": "standard_satellite_orbital_reference",
+      "retrograde_orbit": true
+    },
+    "Pluto": {
+      "inclination_deg": 17.2,
+      "reference_plane": "ecliptic",
+      "source_quality": "MPC_official_rounded"
+    },
+    "Pluto_Moon_Charon": {
+      "inclination_deg": 0.0,
+      "reference_plane": "Pluto_system_plane_approx",
+      "source_quality": "standard_satellite_orbital_reference"
+    },
+    "Haumea": {
+      "inclination_deg": 28.2,
+      "reference_plane": "ecliptic",
+      "source_quality": "MPC_official_rounded"
+    },
+    "Makemake": {
+      "inclination_deg": 29.0,
+      "reference_plane": "ecliptic",
+      "source_quality": "MPC_official_rounded"
+    },
+    "Eris": {
+      "inclination_deg": 43.9,
+      "reference_plane": "ecliptic",
+      "source_quality": "MPC_official_rounded"
+    },
+    "Orcus": {
+      "inclination_deg": 20.592,
+      "reference_plane": "ecliptic",
+      "source_quality": "small_body_current_epoch"
+    },
+    "Quaoar": {
+      "inclination_deg": 7.9895,
+      "reference_plane": "ecliptic",
+      "source_quality": "small_body_current_epoch"
+    },
+    "Gonggong": {
+      "inclination_deg": 30.8664,
+      "reference_plane": "ecliptic",
+      "source_quality": "small_body_current_epoch"
+    },
+    "Sedna": {
+      "inclination_deg": 11.9307,
+      "reference_plane": "ecliptic",
+      "source_quality": "small_body_current_epoch"
+    }
+  }
+}

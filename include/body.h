@@ -18,6 +18,63 @@ enum BodyMaterial {
     MAT_METALLIC = 3
 };
 
+// Fase del ciclo de vida estelar (solo para cuerpos con isStar=true).
+// Determina las propiedades target de radio/luminosidad y el comportamiento
+// del shader (isGiantPhase, isSupernovaPhase — ver shaders.h/renderer.h).
+enum class StellarPhase : uint8_t {
+    PROTOSTAR         = 0,  // pre-secuencia principal, colapso
+    MAIN_SEQUENCE     = 1,  // fusión de hidrógeno, fase estable
+    SUBGIANT          = 2,  // transición suave MS→RED_GIANT
+    RED_GIANT         = 3,  // < 8 M☉ post-MS, expansión extrema
+    SUPERGIANT        = 4,  // > 8 M☉ post-MS, muy masiva e inestable
+    PLANETARY_NEBULA  = 5,  // < 8 M☉, núcleo caliente expuesto
+    SUPERNOVA         = 6,  // > 8 M☉, explosión activa
+    WHITE_DWARF       = 7,  // remanente compacto < 8 M☉
+    SUPERNOVA_REMNANT = 8,  // nebulosa expansiva post-SN
+    BLUE_DWARF        = 9,  // hipotetica: destino final de enanas rojas reales
+                             // (< 0.5 M☉) tras agotar TODO su hidrogeno -- al ser
+                             // totalmente convectivas se contraen y calientan antes
+                             // de apagarse a enana blanca. Nunca observada; solo
+                             // alcanzable manualmente desde el inspector (gui.h).
+
+    // ── Fases del camino de masa intermedia (≈0.6–8 M☉, ruta del Sol) ──
+    HELIUM_FLASH      = 10, // ignicion explosiva del helio en el nucleo
+                             // degenerado al final de la Gigante Roja; brevísimo
+                             // (~1000 años reales). La estrella se contrae rapido:
+                             // 8–15 R☉, 40–80 L☉, ~4500–5000 K.
+    HORIZONTAL_BRANCH = 11, // fusion ESTABLE de helio en nucleo + hidrogeno
+                             // en capa: ~100 Myr, pseudoestable visualmente.
+                             // 8–12 R☉, 40–60 L☉, ~4800–5200 K.
+    AGB               = 12, // Rama Gigante Asintotica: segunda expansion masiva,
+                             // perdida de masa intensa por vientos estelares.
+                             // 200–300 R☉, 3000–6000 L☉, ~2500–3500 K.
+    THERMAL_PULSES    = 13, // Pulsos termicos (AGB tardia): la estrella oscila
+                             // entre ~200 y 300+ R☉ mientras expulsa las capas
+                             // externas. Pulsacion intensa tipo Mira.
+    BLACK_DWARF       = 14, // Hipotetica: enana blanca completamente enfriada.
+                             // Ninguna existe aun (el universo es demasiado joven).
+                             // Solo alcanzable manualmente (como BLUE_DWARF).
+
+    // ── Remanentes compactos post-supernova ──────────────────────
+    NEUTRON_STAR      = 15, // ~10-12 km, ~600 000 K (pulsar joven enfriandose).
+                             // Surge tras SN de progenitores < 20 M☉.
+                             // isStar=false: no tiene llamaradas ni evolucion activa.
+    BLACK_HOLE        = 16, // Radio de Schwarzschild (2GM/c²), ~3-30 km.
+                             // Surge tras SN de progenitores >= 20 M☉.
+                             // Sin luminosidad propia; solo masa y gravedad.
+
+    // ── Subtipos de estrella de neutrones activos ─────────────────
+    PULSAR            = 17, // Estrella de neutrones en rotacion extrema con
+                             // jets polares colimados y haz de radio pulsante.
+                             // Emision tipica en rayos X y radio. El campo
+                             // magnetico dipolar canaliza el plasma en dos
+                             // chorros opuestos a lo largo del eje de rotacion.
+    MAGNETAR          = 18  // Estrella de neutrones con campo magnetico
+                             // extraordinariamente intenso (~10^10-10^11 T).
+                             // Emite rafagas de rayos X blandos y rayos gamma;
+                             // el toro de plasma magnetico es su firma visual.
+};
+
 // ============================================================
 //  Perfil atmosferico de un gigante gaseoso/helado procedural
 //  Controla las 5 capas del shader: macro-bandas, corrientes,
@@ -183,6 +240,50 @@ struct Body {
 
     // Actividad estelar (0 = tranquila, 1 = extrema)
     float stellarActivity = 0.3f;
+
+    // ── Ciclo de vida estelar ────────────────────────────────
+    // Solo activos para cuerpos isStar=true. Para el resto, sus valores
+    // por defecto no afectan la simulación. Ver stellar_evolution.h.
+
+    StellarPhase  stellarPhase         = StellarPhase::MAIN_SEQUENCE;
+    double        stellarPhaseAge      = 0.0;   // segundos en fase actual
+    double        initialStellarMass   = 0.0;   // masa al nacer/fusión (determina ruta evolutiva)
+    double        effectiveSNThreshold = 8.0;   // umbral de SN en M☉ (con ruido por ID)
+
+    // Luminosidad separada en base (física) y visual (con pulsación aplicada)
+    // para evitar acumulación frame a frame de factores multiplicativos.
+    double        baseLuminosity       = 0.0;   // limpia de la fase
+    double        visualLuminosity     = 0.0;   // con pulsación; va al shader e iluminación
+
+    // Pulsación estelar (Cefeidas/Miras/Delta Scuti): acumulador de fase y amplitud
+    double        pulsationPhase       = 0.0;
+    float         pulsationAmplitude   = 0.0f;  // fracción 0–0.30 de baseLuminosity
+
+    // Supernova y remanente
+    double        supernovaProgress    = 0.0;   // 0→1 durante fase SUPERNOVA
+    double        supernovaRadius      = 0.0;   // radio onda de choque (metros)
+    bool          isSupernovaRemnant   = false; // true: nebulosa sin masa ni física
+
+    // Control de evolución desde GUI
+    bool          stellarManualOverride = false; // true: GUI controla la fase, auto pausa
+
+    // Desactivación de física para remanentes (gravedad, colisiones, mareas)
+    bool          gravityEnabled       = true;
+    bool          collisionEnabled     = true;
+
+    // Metalicidad estelar (fracción de masa en elementos > He)
+    // Solar = 0.014; baja Z = 0.001; alta Z = 0.030
+    float         metallicityZ         = 0.014f;
+
+    // Fracción de velocidad de ruptura rotacional (0=lenta, 1=límite de Roche)
+    // Calculada en stellar_evolution.h; alimenta gravity darkening en shader.
+    float         criticalRotationFraction = 0.0f;
+
+    // Placeholders para v2 (remanentes compactos, sin implementar)
+    uint8_t       compactRemnantType   = 0;     // 0=ninguno, 1=NS, 2=BH
+    double        remnantMass          = 0.0;
+    double        kickVelocity         = 0.0;
+    // ────────────────────────────────────────────────────────
 
     // Estado interno
     double spin         = 0;
@@ -437,6 +538,19 @@ struct DustParticle {
     // (inestable: se borran elementos mid-vector). Asignado por
     // SpawnPlanetaryRing (physics.h).
     int64_t hostBodyId = -1;
+
+    // Distancia AL HOST en el momento del spawn (metros), 0 si no aplica
+    // (polvo de colision). 'color' es el material original de la banda
+    // del anillo (silicatos/hielo) y NUNCA cambia con el tiempo -- sin
+    // esto, una particula podria desviarse muchisimo de su orbita original
+    // (un sobrevuelo cercano, ver UpdateDustGravity en physics.h) y seguir
+    // pintada exactamente del mismo tono de banda de siempre, haciendo que
+    // un anillo realmente disgregado/estirado se siga leyendo como "el
+    // mismo Saturno de toda la vida" solo por el color. DrawDustField3D
+    // compara la distancia ACTUAL al host contra este valor para des-tenir
+    // gradualmente hacia un tono de escombro neutro cuando se alejan mucho
+    // de donde nacieron.
+    float spawnRadiusFromHost = 0.0f;
 
     // Rotacion propia ("tumbling") de la roca low-poly, puramente visual:
     // integrada en UpdateDustGravity (currentRotation += rotationSpeed*h,

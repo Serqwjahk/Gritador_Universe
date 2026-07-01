@@ -1,0 +1,37 @@
+{
+  "asteroid_belts": [
+    {
+      "id": "main_asteroid_belt",
+      "name_es": "Cinturón principal de asteroides",
+      "type": "belt",
+      "parent": "Sun",
+      "inner_radius_AU": 2.1,
+      "outer_radius_AU": 3.3,
+      "mean_radius_AU": 2.7,
+      "inclination_range_deg": [0, 30],
+      "notes": "Entre Marte y Júpiter"
+    },
+    {
+      "id": "kuiper_belt",
+      "name_es": "Cinturón de Kuiper",
+      "type": "belt",
+      "parent": "Sun",
+      "inner_radius_AU": 30,
+      "outer_radius_AU": 50,
+      "mean_radius_AU": 40,
+      "inclination_range_deg": [0, 30],
+      "notes": "Región transneptuniana en forma de disco"
+    },
+    {
+      "id": "oort_cloud",
+      "name_es": "Nube de Oort",
+      "type": "spherical_cloud",
+      "parent": "Sun",
+      "inner_radius_AU": 2000,
+      "outer_radius_AU": 100000,
+      "mean_radius_AU": 50000,
+      "inclination_range_deg": [0, 180],
+      "notes": "Distribución esférica, límite gravitacional del sistema solar"
+    }
+  ]
+}

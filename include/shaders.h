@@ -266,6 +266,11 @@ uniform float uRingShadowStrength;
 uniform float stellarMass;
 uniform float stellarActivity;
 uniform float stellarLuminosity;
+// Fase del ciclo de vida estelar (ver StellarPhase en body.h)
+uniform float isGiantPhase;        // 1.0 si SUBGIANT/RED_GIANT/SUPERGIANT
+uniform float isSupernovaPhase;    // 1.0 durante SUPERNOVA activa
+uniform float supernovaProgress;   // 0→1 durante SUPERNOVA
+uniform float rotationCriticality; // 0-1: fracción de velocidad de ruptura rotacional
 
 // ============================================================
 //  GIGANTE GASEOSO PROCEDURAL — perfil atmosferico
@@ -1180,6 +1185,36 @@ void drawStar() {
 
     if (heatSpike > 0.0)
         surfColor = mix(surfColor, vec3(1.5, 1.2, 0.5), heatSpike * 0.65);
+
+    // ─── FASES DE CICLO DE VIDA ESTELAR ─────────────────────────
+    // Gigantes (subgigante/gigante roja/supergigante): células de convección
+    // mayores, corona más expandida y luminosa, cromosfera más prominente.
+    // isGiantPhase ahora es CONTINUO (ver UploadBodyUniforms, renderer.h):
+    // sigue el radio real de la estrella en vez de saltar de golpe en el
+    // instante del cambio de fase, asi el boost de corona/cromosfera crece
+    // a la par que la estrella se infla de verdad.
+    if (isGiantPhase > 0.01) {
+        surfColor = mix(surfColor, blackBodyColor(max(temp - 500.0, 2000.0)), isGiantPhase * 0.12);
+    }
+
+    // Gravity darkening: polos calientes, ecuador frío (rotación rápida)
+    // Von Zeipel (1924): T ∝ g_eff^0.25, donde g_eff = g - Ω²r en ecuador
+    if (rotationCriticality > 0.05) {
+        // Ambos polos son fríos por igual (g_eff sólo depende de la
+        // distancia al eje de rotación, no del hemisferio) -- usar N.y con
+        // signo oscurecía por completo el polo sur a rotación alta.
+        float absLat = abs(N.y);  // 1=polo, 0=ecuador, simétrico
+        float tFactor = 1.0 + rotationCriticality * 0.5 * absLat
+                      - rotationCriticality * 0.5 * (1.0 - absLat);
+        surfColor = surfColor * tFactor;
+    }
+
+    // Supernova activa: override hacia blanco-azul intenso
+    if (isSupernovaPhase > 0.5 && supernovaProgress < 0.5) {
+        float snIntensity = supernovaProgress * 2.0; // 0→1 en la primera mitad
+        vec3 snColor      = vec3(2.5, 2.5, 3.5) * (1.0 - snIntensity * 0.3);
+        surfColor         = mix(surfColor, snColor, snIntensity * 0.85);
+    }
 
     // ─── TONEMAPPING FILMIC EN LUMINANCIA + GAMMA ───────────────
     // 1-exp aplicado a la luminancia (no por canal): preserva el matiz/
@@ -2597,15 +2632,38 @@ void main() {
         vec2 xz = vertexPosition.xz;
         float radial = length(xz);
         float phi = atan(xz.x, xz.y);
-
         vec2 dir = vec2(sin(phi), cos(phi));
         float extra = max(radial - BASE_R, 0.0);
 
-        // shellR es el RADIO ESFÉRICO real deseado.
+        float y = vertexPosition.y;
+
+        // Radio esférico base del arco.
         float shellR = BASE_R + extra * flareHeightMult;
 
+        // ANCLAJE DE PIES:
+        // En los extremos del arco, hundimos un poco la geometría dentro de la estrella.
+        // Esto evita que el flare parezca flotar sobre la superficie por la curvatura,
+        // el bloom o el blending aditivo.
+        // Pie de salida: pequeño y limpio.
+        float footA = 1.0 - smoothstep(0.00, 0.105, t);
+
+        // Pie de entrada/caída: MÁS ancho.
+        // Este es el que faltaba visualmente: si es igual de pequeño que footA,
+        // el arco parece quedarse alto antes de tocar la estrella.
+        float footB = 1.0 - smoothstep(0.00, 0.175, 1.0 - t);
+
+        // Hundimiento asimétrico:
+        // - salida: apenas se mete, porque ya se ve bien.
+        // - entrada: se mete más para que parezca que realmente entra en la fotosfera.
+        const float FOOT_SINK_OUT = 0.018;
+        const float FOOT_SINK_IN  = 0.034;
+
+        shellR -= max(FOOT_SINK_OUT * footA, FOOT_SINK_IN * footB);
+
+        // Seguridad: no dejar que el ancho lateral supere el radio corregido.
+        shellR = max(shellR, BASE_R * 0.96);
+
         // Corrige el radio XZ para que sqrt(xz^2 + y^2) == shellR.
-        float y = vertexPosition.y;
         float correctedRadial = sqrt(max(shellR * shellR - y * y, 0.000001));
 
         float side = vertexTexCoord.y - 0.5;
@@ -2682,6 +2740,9 @@ uniform float flareFade;
 uniform float flareMode;
 uniform float flareAsym;
 uniform float flareBurst;
+
+uniform float flareDrainMode;
+uniform float flareDrainStart;
 
 float invSmooth(float hi, float lo, float x) {
     return 1.0 - smoothstep(lo, hi, x);
@@ -2770,9 +2831,19 @@ void main() {
 
     // Footpoints: manchas calientes donde nace/termina la llamarada.
     // En jets solo domina el pie izquierdo; en arcos se ven ambos pies.
+    // Pie de salida: compacto.
     float footA = exp(-pow(uv.x / 0.055, 2.0));
-    float footB = exp(-pow((1.0 - uv.x) / 0.055, 2.0));
-    float footMask = mix(footA + footB, footA, jetMask);
+
+    // Pie de entrada: MÁS ancho y más visible.
+    // Si este pie es igual al de salida, el lado que cae/entra se pierde
+    // con el fade del borde y parece flotar.
+    float footB = exp(-pow((1.0 - uv.x) / 0.095, 2.0));
+
+    // Para arcos regulares queremos ambos pies,
+    // pero el de entrada necesita refuerzo visual.
+    float archFootMask = footA + footB * 1.55;
+
+    float footMask = mix(archFootMask, footA, jetMask);
     footMask = mix(footMask, footA * 1.25, puffMask);
 
     // Explosion interna para erupciones fallidas.
@@ -2790,8 +2861,8 @@ void main() {
     col *= (2.4 + act * 3.2 * flareScale) * (0.32 + heightF * (0.85 + mDwarf * 0.55));
 
     // Bordes mas estrechos para arcos mas finos e irregulares
-    float eL  = smoothstep(0.0, 0.13, uv.x);
-    float eR  = smoothstep(0.0, 0.13, 1.0 - uv.x);
+    float eL  = smoothstep(0.0, 0.075, uv.x);
+    float eR  = smoothstep(0.0, 0.075, 1.0 - uv.x);
     float eY0 = smoothstep(0.0, 0.10, uv.y);
     float eY1 = smoothstep(0.0, 0.12, 1.0 - uv.y);
     float ribbonEdgeMask = eL * eR * eY0 * eY1;
@@ -2808,14 +2879,34 @@ void main() {
     // Umbral mas alto + erosion para bordes irregulares/flameantes
     float noiseAlpha = smoothstep(0.28, 0.68, fine - erosion);
 
-    // Revelado progresivo: plasma avanzando desde el pie izquierdo (UV.x=0) al pie derecho
-    // UV.x > flareGrow = region aun no formada, se descarta
-    if (uv.x > flareGrow) discard;
-    // Punta del arco: borde frontal suavizado para simular plasma activo avanzando
+    // Recorte del arco.
+    // Modo normal:
+    //   visible desde uv.x=0 hasta uv.x=flareGrow.
+    // Modo drenaje:
+    //   visible desde uv.x=flareDrainStart hasta uv.x=1.
+    // Esto hace que el plasma se reabsorba por el segundo pie, no por el pie de origen.
+    float drainMode = step(0.5, flareDrainMode);
 
-    float tipFade = (flareGrow >= 1.0)
-                    ? 1.0
-                    : invSmooth(flareGrow, max(0.0, flareGrow - 0.12), uv.x);
+    if (drainMode > 0.5) {
+        if (uv.x < flareDrainStart) discard;
+    }
+    else {
+        if (uv.x > flareGrow) discard;
+    }
+
+    // Borde activo.
+    // En modo normal, el borde activo está en flareGrow.
+    // En modo drenaje, el borde activo está en flareDrainStart.
+    float tipFade = 1.0;
+
+    if (drainMode > 0.5) {
+        tipFade = smoothstep(flareDrainStart, min(1.0, flareDrainStart + 0.12), uv.x);
+    }
+    else {
+        tipFade = (flareGrow >= 1.0)
+                ? 1.0
+                : invSmooth(flareGrow, max(0.0, flareGrow - 0.12), uv.x);
+    }
 
     float widthBoost = 1.0 + mDwarf * 0.65 + kDwarf * 0.20;
     // Jets: se erosionan mas hacia la punta, como material expulsado/deshilachado.
@@ -2866,7 +2957,13 @@ void main() {
     // Brillo extra en la base del arco (plasma mas denso junto a la cromosfera)
     // Manchas calientes en los pies: H-alpha/amarillo/blanco segun temperatura.
     vec3 footCol = flareCol(0.92, temp * mix(0.85, 1.25, act)) * (1.5 + flareBurst * 1.4);
+
+    // Brillo base de ambos pies.
     col += footCol * footMask * (1.2 + act * 2.0);
+
+    // Refuerzo extra SOLO para el pie de entrada del arco regular.
+    // Esto crea la sensación de que el plasma está tocando/entrando en la estrella.
+    col += footCol * footB * archMask * (0.9 + act * 1.4);
 
     // Cuerpo del arco clásico: visible en G/Sol sin convertirlo en foco nuclear.
     vec3 archCoreCol = flareCol(0.95, temp) * (1.0 + gDwarf * 1.35);
@@ -2909,9 +3006,11 @@ in vec3 vertexPosition;
 in vec3 vertexNormal;
 in mat4 instanceTransform;
 out vec3 fragNormal;
+out vec3 fragPos;
 uniform mat4 mvp;
 void main() {
     fragNormal  = normalize(mat3(instanceTransform) * vertexNormal);
+    fragPos     = (instanceTransform * vec4(vertexPosition, 1.0)).xyz;
     gl_Position = mvp * instanceTransform * vec4(vertexPosition, 1.0);
 }
 )GLSL";
@@ -2919,9 +3018,11 @@ void main() {
 static const char* ROCK_INSTANCE_FRAG_SRC = R"GLSL(
 #version 330
 in  vec3 fragNormal;
+in  vec3 fragPos;
 out vec4 finalColor;
 uniform vec3  uLightDir;  // direccion (normalizada) HACIA la estrella, relativa al host (ver DrawDustField3D)
 uniform vec3  uBaseColor; // color base del lote (material del anillo/polvo, ver DrawDustField3D)
+uniform vec3  uViewPos;   // posicion de camara en espacio de dibujado (ver DrawDustField3D)
 // Ambiente ligado a g_fakeLightEnabled (renderer.h): 0.15 si la luz "falsa"
 // esta activa, 0.0 si no -- desactivada, sin estrella real cerca, el polvo
 // queda negro real igual que cualquier otro cuerpo del motor.
@@ -2931,8 +3032,19 @@ uniform float uAmbientStrength;
 // resto de cuerpos, calculada en C++ en DrawDustField3D ya que este shader
 // no recibe lightLum/posiciones por-particula) y el atenuado artistico
 // 0.6 de siempre (evita el aspecto "plastico brillante" de un difuso
-// pleno). 0 en el bucket de sombra (ver uLightDir=(0,0,0) ahi).
+// pleno).
 uniform float uLightIntensity;
+// Fraccion de luz directa que SI llega (1 = totalmente iluminado, 0 =
+// eclipsado por el propio planeta host) -- ver sombra cilindrica suave en
+// DrawDustField3D. Sustituye al viejo apagado binario (uLightDir=0): ahora
+// el termino difuso/especular se atenua de forma continua, con un borde de
+// penumbra en vez de un corte duro entre luz y sombra.
+uniform float uShadowFactor;
+// Intensidad de translucidez/retro-dispersion: las particulas de anillo
+// (hielo/polvo fino) dejan pasar algo de luz cuando estan a contraluz,
+// generando el clasico brillo de borde de los anillos vistos a contraluz.
+// 0 para polvo de colision (rocas opacas, sin este efecto).
+uniform float uTranslucency;
 void main() {
     // Las rocas no llevan textura: a esta escala (instanciado masivo) no
     // vale la pena depender del uniform colDiffuse del material -- el
@@ -2940,7 +3052,32 @@ void main() {
     // segun el planeta duenio del anillo (o un gris por defecto para
     // polvo de colision).
     vec3 baseColor = uBaseColor;
-    float diffuse  = max(dot(fragNormal, uLightDir), 0.0);
-    finalColor = vec4((diffuse * uLightIntensity + uAmbientStrength) * baseColor, 1.0);
+    vec3 N = normalize(fragNormal);
+    vec3 V = normalize(uViewPos - fragPos);
+    vec3 L = uLightDir;
+
+    float lit = clamp(uShadowFactor, 0.0, 1.0);
+
+    float diffuse = max(dot(N, L), 0.0) * lit;
+
+    // Especular suave (Blinn-Phong de bajo brillo): destellos de hielo/roca
+    // pulida en el anillo, mas notorios cerca del angulo de reflexion
+    // especular que de la normal directa al sol.
+    vec3 H = normalize(L + V);
+    float specAngle = max(dot(N, H), 0.0);
+    float specular  = pow(specAngle, 28.0) * lit * 0.35;
+
+    // Translucidez a contraluz: cuando la cara visible mira casi opuesta a
+    // la luz (dot(N,L) muy negativo) pero la camara la ve de frente,
+    // particulas finas de hielo/polvo dejan pasar luz como si brillaran
+    // desde dentro -- efecto clasico de los anillos fotografiados a
+    // contraluz. Se atenua igual por 'lit' para que el lado realmente
+    // eclipsado por el planeta no brille de la nada.
+    float backLight   = max(dot(-N, L), 0.0);
+    float rim          = pow(1.0 - max(dot(N, V), 0.0), 2.0);
+    float translucent = backLight * rim * uTranslucency * lit;
+
+    float light = diffuse + specular + translucent;
+    finalColor = vec4(light * uLightIntensity * baseColor + uAmbientStrength * baseColor, 1.0);
 }
 )GLSL";

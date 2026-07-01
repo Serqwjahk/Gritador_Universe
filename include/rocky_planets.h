@@ -174,6 +174,282 @@ inline RockyPlanetProfile MakeCeresProfile() {
     return p;
 }
 
+// ── Io: luna volcanica de Jupiter, resurfacing constante por erupciones
+//    de azufre -- crateres casi inexistentes (se borran solapados por
+//    coladas nuevas), montanas reales hasta 17 km (las mas altas del
+//    sistema solar fuera de cuerpos mucho mas grandes) ──
+inline RockyPlanetProfile MakeIoProfile() {
+    RockyPlanetProfile p;
+    p.waterLevel    = 0.0f;
+    p.craterDensity = 0.04f; // resurfacing volcanico constante
+    p.cloudDensity  = 0.0f;
+    p.hasCityLights = 0.0f;
+    p.seed          = 7.0f;
+    p.polarIceSize     = 0.15f; // parches de escarcha de SO2
+    p.mountainStrength = 0.55f; // Boosaule/Euboea Montes
+    p.terrainScale     = 1.0f;
+    p.colorLow   = HexColV3(0xC9622A); // coladas de azufre fundido/oxidado
+    p.colorHigh  = HexColV3(0xE8DCB0); // escarcha de SO2 / depositos claros
+    p.colorWater = HexColV3(0x404040);
+    p.cloudColor = HexColV3(0xe0e0e0);
+    return p;
+}
+
+// ── Europa: corteza de hielo joven, casi sin crateres grandes, surcada
+//    por "lineae" rojizas (fracturas con material del oceano subsuperficial) ──
+inline RockyPlanetProfile MakeEuropaProfile() {
+    RockyPlanetProfile p;
+    p.waterLevel    = 0.0f;
+    p.craterDensity = 0.03f; // corteza de hielo geologicamente muy joven
+    p.cloudDensity  = 0.0f;
+    p.hasCityLights = 0.0f;
+    p.seed          = 8.0f;
+    p.mountainStrength = 0.05f; // superficie casi plana
+    p.terrainScale     = 0.65f;
+    p.colorLow   = HexColV3(0x8B6F47); // lineae (fracturas tenidas de marron)
+    p.colorHigh  = HexColV3(0xE8DCC0); // hielo limpio
+    p.colorWater = HexColV3(0x404040);
+    p.cloudColor = HexColV3(0xe0e0e0);
+    return p;
+}
+
+// ── Ganimedes: mezcla de terreno oscuro muy antiguo (cratereado) y
+//    terreno surcado mas joven y brillante ──
+inline RockyPlanetProfile MakeGanymedeProfile() {
+    RockyPlanetProfile p;
+    p.waterLevel    = 0.0f;
+    p.craterDensity = 0.45f;
+    p.cloudDensity  = 0.0f;
+    p.hasCityLights = 0.0f;
+    p.seed          = 9.0f;
+    p.mountainStrength = 0.22f;
+    p.terrainScale     = 0.90f;
+    p.colorLow   = HexColV3(0x5B5147); // terreno oscuro antiguo
+    p.colorHigh  = HexColV3(0x9C9488); // terreno surcado brillante
+    p.colorWater = HexColV3(0x404040);
+    p.cloudColor = HexColV3(0xe0e0e0);
+    return p;
+}
+
+// ── Calisto: la superficie mas antigua y cratereada del sistema solar
+//    (sin resurfacing significativo desde su formacion) ──
+inline RockyPlanetProfile MakeCallistoProfile() {
+    RockyPlanetProfile p;
+    p.waterLevel    = 0.0f;
+    p.craterDensity = 0.85f; // saturacion casi total de impactos
+    p.cloudDensity  = 0.0f;
+    p.hasCityLights = 0.0f;
+    p.seed          = 10.0f;
+    p.mountainStrength = 0.15f;
+    p.terrainScale     = 0.85f;
+    p.colorLow   = HexColV3(0x4A4038); // regolito oscuro contaminado de roca
+    p.colorHigh  = HexColV3(0x7A7268);
+    p.colorWater = HexColV3(0x404040);
+    p.cloudColor = HexColV3(0xe0e0e0);
+    return p;
+}
+
+// ── Titan: superficie de dunas e hidrocarburos casi oculta bajo una
+//    bruma anaranjada espesa (ver atmosphereDensity en catalog.h) --
+//    pocos crateres (erosion por lluvia de metano) ──
+inline RockyPlanetProfile MakeTitanProfile() {
+    RockyPlanetProfile p;
+    p.waterLevel    = 0.0f;
+    p.craterDensity = 0.08f; // erosion por ciclo del metano
+    p.cloudDensity  = 0.0f;  // la opacidad real la aporta atmosphereDensity, no nubes propias
+    p.hasCityLights = 0.0f;
+    p.seed          = 11.0f;
+    p.mountainStrength = 0.10f;
+    p.terrainScale     = 0.80f;
+    p.colorLow   = HexColV3(0x8B5A2B); // lagos/dunas de hidrocarburos
+    p.colorHigh  = HexColV3(0xC9914F);
+    p.colorWater = HexColV3(0x404040);
+    p.cloudColor = HexColV3(0xe0e0e0);
+    return p;
+}
+
+// ── Triton: "terreno de melon" (textura punteada unica) + casquete de
+//    nitrogeno con estrias oscuras de geiseres criovolcanicos ──
+inline RockyPlanetProfile MakeTritonProfile() {
+    RockyPlanetProfile p;
+    p.waterLevel    = 0.0f;
+    p.craterDensity = 0.25f; // aproxima la textura punteada del "terreno de melon"
+    p.cloudDensity  = 0.0f;
+    p.hasCityLights = 0.0f;
+    p.seed          = 12.0f;
+    p.polarIceSize     = 1.0f; // gran casquete de nitrogeno
+    p.mountainStrength = 0.10f;
+    p.terrainScale     = 0.70f;
+    p.colorLow   = HexColV3(0xE3C9C9); // hielo de nitrogeno rosado
+    p.colorHigh  = HexColV3(0xF0E8E8);
+    p.colorWater = HexColV3(0x404040);
+    p.cloudColor = HexColV3(0xe0e0e0);
+    return p;
+}
+
+// ── Pluton: corazon de nitrogeno brillante (Tombaugh Regio) sobre
+//    terreno de tolinas rojizo-marron (Cthulhu Macula); montanas reales
+//    de hielo de agua (Norgay/Hillary Montes) ──
+inline RockyPlanetProfile MakePlutoProfile() {
+    RockyPlanetProfile p;
+    p.waterLevel    = 0.0f;
+    p.craterDensity = 0.35f;
+    p.cloudDensity  = 0.0f;
+    p.hasCityLights = 0.0f;
+    p.seed          = 13.0f;
+    p.polarIceSize     = 0.5f; // aproxima el "corazon" de Tombaugh Regio
+    p.mountainStrength = 0.30f;
+    p.terrainScale     = 0.75f;
+    p.colorLow   = HexColV3(0x9C6648); // Cthulhu Macula (tolinas oscuras)
+    p.colorHigh  = HexColV3(0xE8D9C4); // Tombaugh Regio (hielo de nitrogeno)
+    p.colorWater = HexColV3(0x404040);
+    p.cloudColor = HexColV3(0xe0e0e0);
+    return p;
+}
+
+// ── Caronte: gris neutro, muy cratereado, con el polo norte (Mordor
+//    Macula) tenido de rojo por tolinas migradas desde la atmosfera de
+//    Pluton ──
+inline RockyPlanetProfile MakeCharonProfile() {
+    RockyPlanetProfile p;
+    p.waterLevel    = 0.0f;
+    p.craterDensity = 0.70f;
+    p.cloudDensity  = 0.0f;
+    p.hasCityLights = 0.0f;
+    p.seed          = 14.0f;
+    p.mountainStrength = 0.20f;
+    p.terrainScale     = 0.80f;
+    p.colorLow   = HexColV3(0x8C8680); // gris neutro
+    p.colorHigh  = HexColV3(0xACA49C);
+    p.colorWater = HexColV3(0x404040);
+    p.cloudColor = HexColV3(0xe0e0e0);
+    return p;
+}
+
+// ── Haumea: hielo de agua cristalina, albedo muy alto, forma elipsoidal
+//    real (rotacion rapidisima de ~4h) no modelada aqui -- solo apariencia ──
+inline RockyPlanetProfile MakeHaumeaProfile() {
+    RockyPlanetProfile p;
+    p.waterLevel    = 0.0f;
+    p.craterDensity = 0.20f;
+    p.cloudDensity  = 0.0f;
+    p.hasCityLights = 0.0f;
+    p.seed          = 15.0f;
+    p.mountainStrength = 0.10f;
+    p.terrainScale     = 0.70f;
+    p.colorLow   = HexColV3(0xC8C4BC); // hielo cristalino, brillo casi uniforme
+    p.colorHigh  = HexColV3(0xE8E4DC);
+    p.colorWater = HexColV3(0x404040);
+    p.cloudColor = HexColV3(0xe0e0e0);
+    return p;
+}
+
+// ── Makemake: tolinas rojizas + parches de hielo de metano/etano ──
+inline RockyPlanetProfile MakeMakemakeProfile() {
+    RockyPlanetProfile p;
+    p.waterLevel    = 0.0f;
+    p.craterDensity = 0.15f;
+    p.cloudDensity  = 0.0f;
+    p.hasCityLights = 0.0f;
+    p.seed          = 16.0f;
+    p.mountainStrength = 0.20f;
+    p.terrainScale     = 0.75f;
+    p.colorLow   = HexColV3(0x7A4A36); // tolinas oscuras
+    p.colorHigh  = HexColV3(0xB97A56); // hielo de metano teñido
+    p.colorWater = HexColV3(0x404040);
+    p.cloudColor = HexColV3(0xe0e0e0);
+    return p;
+}
+
+// ── Eris: el objeto transneptuniano mas brillante conocido (albedo~0.84,
+//    comparable a la nieve fresca) -- hielo de metano casi puro en superficie ──
+inline RockyPlanetProfile MakeErisProfile() {
+    RockyPlanetProfile p;
+    p.waterLevel    = 0.0f;
+    p.craterDensity = 0.15f;
+    p.cloudDensity  = 0.0f;
+    p.hasCityLights = 0.0f;
+    p.seed          = 17.0f;
+    p.mountainStrength = 0.10f;
+    p.terrainScale     = 0.70f;
+    p.colorLow   = HexColV3(0xC8C4BC);
+    p.colorHigh  = HexColV3(0xECE8E0);
+    p.colorWater = HexColV3(0x404040);
+    p.cloudColor = HexColV3(0xe0e0e0);
+    return p;
+}
+
+// ── Orcus: a veces llamado "anti-Pluton" por su superficie mucho mas
+//    neutra/gris (mucha menos tolina roja que Pluton) ──
+inline RockyPlanetProfile MakeOrcusProfile() {
+    RockyPlanetProfile p;
+    p.waterLevel    = 0.0f;
+    p.craterDensity = 0.40f;
+    p.cloudDensity  = 0.0f;
+    p.hasCityLights = 0.0f;
+    p.seed          = 18.0f;
+    p.mountainStrength = 0.15f;
+    p.terrainScale     = 0.75f;
+    p.colorLow   = HexColV3(0x9A968E);
+    p.colorHigh  = HexColV3(0xC4C0B8);
+    p.colorWater = HexColV3(0x404040);
+    p.cloudColor = HexColV3(0xe0e0e0);
+    return p;
+}
+
+// ── Quaoar: hielo de agua cristalina + tolinas rojizas; posee un anillo
+//    real descubierto en 2023 (ver SpawnPlanetaryRing en main.cpp) ──
+inline RockyPlanetProfile MakeQuaoarProfile() {
+    RockyPlanetProfile p;
+    p.waterLevel    = 0.0f;
+    p.craterDensity = 0.35f;
+    p.cloudDensity  = 0.0f;
+    p.hasCityLights = 0.0f;
+    p.seed          = 19.0f;
+    p.mountainStrength = 0.25f;
+    p.terrainScale     = 0.80f;
+    p.colorLow   = HexColV3(0x6E4636);
+    p.colorHigh  = HexColV3(0x9C6E52);
+    p.colorWater = HexColV3(0x404040);
+    p.cloudColor = HexColV3(0xe0e0e0);
+    return p;
+}
+
+// ── Gonggong: tolinas rojizas, superficie similar a Quaoar/Makemake ──
+inline RockyPlanetProfile MakeGonggongProfile() {
+    RockyPlanetProfile p;
+    p.waterLevel    = 0.0f;
+    p.craterDensity = 0.30f;
+    p.cloudDensity  = 0.0f;
+    p.hasCityLights = 0.0f;
+    p.seed          = 20.0f;
+    p.mountainStrength = 0.20f;
+    p.terrainScale     = 0.75f;
+    p.colorLow   = HexColV3(0x6E3A2C);
+    p.colorHigh  = HexColV3(0xA85C45);
+    p.colorWater = HexColV3(0x404040);
+    p.cloudColor = HexColV3(0xe0e0e0);
+    return p;
+}
+
+// ── Sedna: uno de los objetos mas rojos conocidos del sistema solar
+//    (casi tan rojo como Marte), orbita extrema en el disco disperso ──
+inline RockyPlanetProfile MakeSednaProfile() {
+    RockyPlanetProfile p;
+    p.waterLevel    = 0.0f;
+    p.craterDensity = 0.10f;
+    p.cloudDensity  = 0.0f;
+    p.hasCityLights = 0.0f;
+    p.seed          = 21.0f;
+    p.mountainStrength = 0.10f;
+    p.terrainScale     = 0.70f;
+    p.colorLow   = HexColV3(0x5C2018);
+    p.colorHigh  = HexColV3(0x9C3B2E);
+    p.colorWater = HexColV3(0x404040);
+    p.cloudColor = HexColV3(0xe0e0e0);
+    return p;
+}
+
 // ── Asteroide/fragmento procedural: irregular, cratereado, sin agua/
 //    nubes. La paleta varia segun el material (rocoso/helado/metalico)
 //    ademas de la semilla, para que escombros y proto-cuerpos generados
@@ -382,6 +658,21 @@ inline bool AssignRockyPlanetProfile(Body& b, const std::string& baseName, const
     if (baseName == "Marte")     { b.rockyPlanet = MakeMarsProfile();     b.isRockyPlanet = true; return true; }
     if (baseName == "Luna")      { b.rockyPlanet = MakeMoonProfile();     b.isRockyPlanet = true; return true; }
     if (baseName == "Ceres")     { b.rockyPlanet = MakeCeresProfile();    b.isRockyPlanet = true; return true; }
+    if (baseName == "Io")        { b.rockyPlanet = MakeIoProfile();       b.isRockyPlanet = true; return true; }
+    if (baseName == "Europa")    { b.rockyPlanet = MakeEuropaProfile();  b.isRockyPlanet = true; return true; }
+    if (baseName == "Ganymede")  { b.rockyPlanet = MakeGanymedeProfile(); b.isRockyPlanet = true; return true; }
+    if (baseName == "Calisto")   { b.rockyPlanet = MakeCallistoProfile(); b.isRockyPlanet = true; return true; }
+    if (baseName == "Titan")     { b.rockyPlanet = MakeTitanProfile();   b.isRockyPlanet = true; return true; }
+    if (baseName == "Triton")    { b.rockyPlanet = MakeTritonProfile();  b.isRockyPlanet = true; return true; }
+    if (baseName == "Pluton")    { b.rockyPlanet = MakePlutoProfile();   b.isRockyPlanet = true; return true; }
+    if (baseName == "Caronte")   { b.rockyPlanet = MakeCharonProfile();  b.isRockyPlanet = true; return true; }
+    if (baseName == "Haumea")    { b.rockyPlanet = MakeHaumeaProfile();  b.isRockyPlanet = true; return true; }
+    if (baseName == "Makemake")  { b.rockyPlanet = MakeMakemakeProfile(); b.isRockyPlanet = true; return true; }
+    if (baseName == "Eris")      { b.rockyPlanet = MakeErisProfile();    b.isRockyPlanet = true; return true; }
+    if (baseName == "Orcus")     { b.rockyPlanet = MakeOrcusProfile();   b.isRockyPlanet = true; return true; }
+    if (baseName == "Quaoar")    { b.rockyPlanet = MakeQuaoarProfile();  b.isRockyPlanet = true; return true; }
+    if (baseName == "Gonggong")  { b.rockyPlanet = MakeGonggongProfile(); b.isRockyPlanet = true; return true; }
+    if (baseName == "Sedna")     { b.rockyPlanet = MakeSednaProfile();   b.isRockyPlanet = true; return true; }
     if (baseName == "Asteroide") {
         b.rockyPlanet = MakeAsteroidProfile((unsigned int)GetRandomValue(0, 0x7fffffff));
         b.isRockyPlanet = true;

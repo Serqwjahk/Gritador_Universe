@@ -1,0 +1,1108 @@
+{
+  "metadata": {
+    "version": "solar_system_realistic_researched_2026-06-29",
+    "language": "es",
+    "based_on": "NEW_values.json",
+    "scope": "Incluye todos los cuerpos disponibles en el archivo original, con estructura nueva y distancias orbitales realistas.",
+    "distance_convention": {
+      "heliocentric_objects": "semi_major_axis_AU y semi_major_axis_km representan distancia media orbital aproximada al Sol.",
+      "natural_satellites": "semi_major_axis_km representa distancia media orbital al cuerpo padre.",
+      "perihelion_aphelion": "Calculados de forma aproximada como a*(1-e) y a*(1+e).",
+      "moon_periapsis_apoapsis": "Calculados de forma aproximada como a*(1-e) y a*(1+e)."
+    },
+    "units": {
+      "mass": "kg",
+      "radius": "km",
+      "gravity": "m/s^2",
+      "density": "g/cm^3",
+      "temperature": "K",
+      "pressure": "bar",
+      "distance": "km/AU",
+      "composition_fraction": "0-1"
+    },
+    "uncertainty_note": "Las composiciones sólidas de muchos cuerpos menores son aproximaciones realistas/modeladas. Para cuerpos transneptunianos candidatos, varios valores orbitales y físicos deben tratarse como aproximados.",
+    "sources": [
+      "NASA/JPL Planetary Physical Parameters",
+      "NASA Solar System Exploration Planet Compare",
+      "NASA Science Solar System / Dwarf Planets",
+      "NASA/JPL Horizons and Small-Body Database"
+    ]
+  },
+  "constants": {
+    "Astronomical_Unit_km": 149597870.7,
+    "Light_Year_km": 9460730472580.8,
+    "Earth_Mass_kg": 5.97217e24,
+    "Earth_Radius_km": 6371.0084,
+    "Jupiter_Mass_kg": 1.898125e27,
+    "Jupiter_Radius_km": 69911.0,
+    "Solar_Mass_kg": 1.9885e30,
+    "Solar_Radius_km": 696340.0
+  },
+  "bodies": [
+    {
+      "id": "Sun",
+      "name_es": "Sol",
+      "type": "star",
+      "classification": "G2V",
+      "physical": {
+        "mass_kg": 1.9885e30,
+        "mean_radius_km": 696340.0,
+        "surface_gravity_m_s2": 274.0,
+        "density_g_cm3": 1.408,
+        "axial_tilt_deg": 7.25,
+        "surface_temp_K": 5778.0,
+        "has_solid_surface": false
+      },
+      "orbit": {
+        "central_body": "Milky_Way",
+        "distance_type": "galactic_orbit_not_modelled_here"
+      },
+      "atmosphere_or_outer_layers": {
+        "pressure_bar": 0.0,
+        "composition_fraction": {
+          "Hidrogeno": 0.7346,
+          "Helio": 0.2485,
+          "Oxigeno": 0.0077,
+          "Carbono": 0.0029,
+          "Hierro": 0.0016,
+          "Neon": 0.0012,
+          "Nitrogeno": 0.0009
+        }
+      },
+      "composition_confidence": "high"
+    },
+    {
+      "id": "Mercury",
+      "name_es": "Mercurio",
+      "type": "planet",
+      "classification": "terrestrial",
+      "physical": {
+        "mass_kg": 3.30103e23,
+        "mean_radius_km": 2439.4,
+        "equatorial_radius_km": 2440.53,
+        "surface_gravity_m_s2": 3.7,
+        "density_g_cm3": 5.4289,
+        "axial_tilt_deg": 0.034,
+        "mean_surface_temp_K": 440.0,
+        "escape_velocity_km_s": 4.25,
+        "geometric_albedo": 0.106,
+        "has_solid_surface": true
+      },
+      "orbit": {
+        "central_body": "Sun",
+        "semi_major_axis_AU": 0.387,
+        "semi_major_axis_km": 57894475.95,
+        "eccentricity": 0.20563593,
+        "perihelion_AU_approx": 0.307418,
+        "aphelion_AU_approx": 0.466582,
+        "orbital_period_years": 0.2408467,
+        "rotation_period_days": 58.6462
+      },
+      "atmosphere": {
+        "type": "exosphere",
+        "pressure_bar": 0.0,
+        "composition_fraction": {
+          "Oxigeno": 0.42,
+          "Sodio": 0.29,
+          "Hidrogeno": 0.22,
+          "Helio": 0.06,
+          "Potasio": 0.01
+        }
+      },
+      "solid_composition_fraction": {
+        "Hierro_Niquel_nucleo": 0.7,
+        "Silicatos_manto_corteza": 0.25,
+        "Sulfuros_y_elementos_traza": 0.05
+      },
+      "composition_confidence": "medium"
+    },
+    {
+      "id": "Venus",
+      "name_es": "Venus",
+      "type": "planet",
+      "classification": "terrestrial",
+      "physical": {
+        "mass_kg": 4.86731e24,
+        "mean_radius_km": 6051.8,
+        "surface_gravity_m_s2": 8.87,
+        "density_g_cm3": 5.243,
+        "axial_tilt_deg": 177.36,
+        "mean_surface_temp_K": 737.0,
+        "escape_velocity_km_s": 10.36,
+        "geometric_albedo": 0.65,
+        "has_solid_surface": true
+      },
+      "orbit": {
+        "central_body": "Sun",
+        "semi_major_axis_AU": 0.723,
+        "semi_major_axis_km": 108159260.52,
+        "eccentricity": 0.00677672,
+        "perihelion_AU_approx": 0.7181,
+        "aphelion_AU_approx": 0.7279,
+        "orbital_period_years": 0.61519726,
+        "rotation_period_days": -243.018
+      },
+      "atmosphere": {
+        "type": "thick_CO2",
+        "pressure_bar": 92.0,
+        "composition_fraction": {
+          "Dioxido_de_Carbono": 0.965,
+          "Nitrogeno": 0.035,
+          "Dioxido_de_Azufre": 0.00015,
+          "Argon": 0.00007,
+          "Vapor_de_Agua": 0.00002
+        }
+      },
+      "solid_composition_fraction": {
+        "Hierro_Niquel_nucleo": 0.32,
+        "Silicatos_manto_corteza": 0.63,
+        "Oxidos_y_sulfuros": 0.05
+      },
+      "composition_confidence": "high"
+    },
+    {
+      "id": "Earth",
+      "name_es": "Tierra",
+      "type": "planet",
+      "classification": "terrestrial",
+      "physical": {
+        "mass_kg": 5.97217e24,
+        "mean_radius_km": 6371.0084,
+        "equatorial_radius_km": 6378.1366,
+        "surface_gravity_m_s2": 9.8,
+        "density_g_cm3": 5.5134,
+        "axial_tilt_deg": 23.44,
+        "mean_surface_temp_K": 288.0,
+        "escape_velocity_km_s": 11.19,
+        "geometric_albedo": 0.367,
+        "has_solid_surface": true
+      },
+      "orbit": {
+        "central_body": "Sun",
+        "semi_major_axis_AU": 1.0,
+        "semi_major_axis_km": 149597870.7,
+        "eccentricity": 0.01671123,
+        "perihelion_AU_approx": 0.983289,
+        "aphelion_AU_approx": 1.016711,
+        "orbital_period_years": 1.0000174,
+        "rotation_period_days": 0.99726968
+      },
+      "atmosphere": {
+        "type": "nitrogen_oxygen",
+        "pressure_bar": 1.01325,
+        "composition_fraction": {
+          "Nitrogeno": 0.7808,
+          "Oxigeno": 0.2095,
+          "Argon": 0.0093,
+          "Dioxido_de_Carbono": 0.00042
+        }
+      },
+      "solid_composition_fraction": {
+        "Hierro": 0.321,
+        "Oxigeno": 0.301,
+        "Silicio": 0.151,
+        "Magnesio": 0.139,
+        "Azufre": 0.029,
+        "Niquel": 0.018,
+        "Calcio": 0.015,
+        "Aluminio": 0.014,
+        "Agua_Liquida": 0.0002
+      },
+      "composition_confidence": "high"
+    },
+    {
+      "id": "Moon",
+      "name_es": "Luna",
+      "type": "natural_satellite",
+      "classification": "satellite_of_Earth",
+      "physical": {
+        "mass_kg": 7.346e22,
+        "mean_radius_km": 1737.4,
+        "surface_gravity_m_s2": 1.62,
+        "density_g_cm3": 3.344,
+        "axial_tilt_deg": 1.542,
+        "mean_surface_temp_K": 250.0,
+        "escape_velocity_km_s": 2.38,
+        "has_solid_surface": true
+      },
+      "orbit": {
+        "central_body": "Earth",
+        "semi_major_axis_km": 384400,
+        "semi_major_axis_AU_equivalent": 0.00256955,
+        "eccentricity": 0.0549,
+        "periapsis_km_approx": 363298.44,
+        "apoapsis_km_approx": 405501.56,
+        "orbital_period_days": 27.321661
+      },
+      "atmosphere": {
+        "type": "exosphere",
+        "pressure_bar": 0.0,
+        "composition_fraction": {}
+      },
+      "solid_composition_fraction": {
+        "Oxigeno": 0.43,
+        "Silicio": 0.2,
+        "Magnesio": 0.19,
+        "Hierro": 0.1,
+        "Calcio": 0.03,
+        "Aluminio": 0.03,
+        "Titanio": 0.018,
+        "Cromo": 0.002
+      },
+      "composition_confidence": "medium"
+    },
+    {
+      "id": "Mars",
+      "name_es": "Marte",
+      "type": "planet",
+      "classification": "terrestrial",
+      "physical": {
+        "mass_kg": 6.41691e23,
+        "mean_radius_km": 3389.5,
+        "equatorial_radius_km": 3396.19,
+        "surface_gravity_m_s2": 3.71,
+        "density_g_cm3": 3.934,
+        "axial_tilt_deg": 25.19,
+        "mean_surface_temp_K": 210.0,
+        "escape_velocity_km_s": 5.03,
+        "geometric_albedo": 0.15,
+        "has_solid_surface": true
+      },
+      "orbit": {
+        "central_body": "Sun",
+        "semi_major_axis_AU": 1.524,
+        "semi_major_axis_km": 227987154.95,
+        "eccentricity": 0.0933941,
+        "perihelion_AU_approx": 1.3817,
+        "aphelion_AU_approx": 1.6663,
+        "orbital_period_years": 1.8808476,
+        "rotation_period_days": 1.02595676
+      },
+      "atmosphere": {
+        "type": "thin_CO2",
+        "pressure_bar": 0.006,
+        "composition_fraction": {
+          "Dioxido_de_Carbono": 0.953,
+          "Nitrogeno": 0.027,
+          "Argon": 0.016,
+          "Oxigeno": 0.0013,
+          "Monoxido_de_Carbono": 0.0008
+        }
+      },
+      "solid_composition_fraction": {
+        "Oxigeno": 0.42,
+        "Hierro": 0.21,
+        "Silicio": 0.16,
+        "Magnesio": 0.11,
+        "Azufre": 0.04,
+        "Calcio": 0.03,
+        "Aluminio": 0.02,
+        "Niquel": 0.01
+      },
+      "composition_confidence": "high"
+    },
+    {
+      "id": "Ceres",
+      "name_es": "Ceres",
+      "type": "dwarf_planet",
+      "classification": "asteroid_belt",
+      "physical": {
+        "mass_kg": 9.38416e20,
+        "mean_radius_km": 469.7,
+        "equatorial_radius_km": 482.1,
+        "surface_gravity_m_s2": 0.27,
+        "density_g_cm3": 2.162,
+        "axial_tilt_deg": 4.0,
+        "mean_surface_temp_K": 167.0,
+        "escape_velocity_km_s": 0.51,
+        "geometric_albedo": 0.09,
+        "has_solid_surface": true
+      },
+      "orbit": {
+        "central_body": "Sun",
+        "semi_major_axis_AU": 2.77,
+        "semi_major_axis_km": 414386101.84,
+        "eccentricity": 0.0758,
+        "perihelion_AU_approx": 2.5600,
+        "aphelion_AU_approx": 2.9800,
+        "orbital_period_years": 4.61,
+        "rotation_period_days": 0.37809042
+      },
+      "atmosphere": {
+        "type": "tenuous_exosphere_water_vapor",
+        "pressure_bar": 0.0,
+        "composition_fraction": {
+          "Vapor_de_Agua_traza": 1.0
+        }
+      },
+      "solid_composition_fraction": {
+        "Silicatos_hidratados_y_arcillas": 0.45,
+        "Agua_Hielo": 0.25,
+        "Carbonatos_y_sales": 0.12,
+        "Oxidos_de_Hierro": 0.08,
+        "Compuestos_organicos": 0.05,
+        "Otros": 0.05
+      },
+      "composition_confidence": "medium"
+    },
+    {
+      "id": "Jupiter",
+      "name_es": "Júpiter",
+      "type": "planet",
+      "classification": "gas_giant",
+      "physical": {
+        "mass_kg": 1.898125e27,
+        "mean_radius_km": 69911.0,
+        "equatorial_radius_km": 71492.0,
+        "surface_gravity_m_s2": 24.79,
+        "density_g_cm3": 1.3262,
+        "axial_tilt_deg": 3.13,
+        "reference_temp_K": 165.0,
+        "escape_velocity_km_s": 60.2,
+        "geometric_albedo": 0.52,
+        "has_solid_surface": false,
+        "has_rings": true
+      },
+      "orbit": {
+        "central_body": "Sun",
+        "semi_major_axis_AU": 5.203,
+        "semi_major_axis_km": 778298722.55,
+        "eccentricity": 0.04838624,
+        "perihelion_AU_approx": 4.9512,
+        "aphelion_AU_approx": 5.4548,
+        "orbital_period_years": 11.862615,
+        "rotation_period_days": 0.41354
+      },
+      "atmosphere": {
+        "type": "hydrogen_helium",
+        "reference_pressure_bar": 1.0,
+        "composition_fraction": {
+          "Hidrogeno": 0.898,
+          "Helio": 0.102,
+          "Metano_traza": 0.0003,
+          "Amoniaco_traza": 0.000026,
+          "Vapor_de_Agua_traza": 0.000004
+        }
+      },
+      "interior_composition_fraction": {
+        "Hidrogeno_metalico_y_molecular": 0.71,
+        "Helio": 0.24,
+        "Hielos_agua_amoniaco_metano": 0.03,
+        "Roca_metal_nucleo": 0.02
+      },
+      "composition_confidence": "medium_high"
+    },
+    {
+      "id": "Io",
+      "name_es": "Ío",
+      "type": "natural_satellite",
+      "classification": "satellite_of_Jupiter",
+      "physical": {
+        "mass_kg": 8.9319e22,
+        "mean_radius_km": 1821.6,
+        "surface_gravity_m_s2": 1.796,
+        "density_g_cm3": 3.528,
+        "mean_surface_temp_K": 130.0,
+        "has_solid_surface": true
+      },
+      "orbit": {
+        "central_body": "Jupiter",
+        "semi_major_axis_km": 421700,
+        "semi_major_axis_AU_equivalent": 0.002819,
+        "eccentricity": 0.0041,
+        "periapsis_km_approx": 419971.03,
+        "apoapsis_km_approx": 423428.97,
+        "orbital_period_days": 1.769137786
+      },
+      "atmosphere": {
+        "type": "SO2_tenuous",
+        "pressure_bar": 0.0,
+        "composition_fraction": {
+          "Dioxido_de_Azufre": 0.9,
+          "Monoxido_de_Azufre": 0.05,
+          "Sodio_Cloro_trazas": 0.05
+        }
+      },
+      "solid_composition_fraction": {
+        "Silicatos": 0.55,
+        "Hierro_Niquel": 0.25,
+        "Azufre_y_Dioxido_de_Azufre": 0.18,
+        "Otros": 0.02
+      },
+      "composition_confidence": "medium"
+    },
+    {
+      "id": "Europa",
+      "name_es": "Europa",
+      "type": "natural_satellite",
+      "classification": "satellite_of_Jupiter",
+      "physical": {
+        "mass_kg": 4.7998e22,
+        "mean_radius_km": 1560.8,
+        "surface_gravity_m_s2": 1.315,
+        "density_g_cm3": 3.013,
+        "mean_surface_temp_K": 102.0,
+        "has_solid_surface": true
+      },
+      "orbit": {
+        "central_body": "Jupiter",
+        "semi_major_axis_km": 671100,
+        "semi_major_axis_AU_equivalent": 0.004486,
+        "eccentricity": 0.0094,
+        "periapsis_km_approx": 664791.66,
+        "apoapsis_km_approx": 677408.34,
+        "orbital_period_days": 3.551181
+      },
+      "atmosphere": {
+        "type": "oxygen_exosphere",
+        "pressure_bar": 0.0,
+        "composition_fraction": {
+          "Oxigeno_traza": 1.0
+        }
+      },
+      "solid_composition_fraction": {
+        "Agua_Hielo": 0.55,
+        "Roca_silicatos": 0.35,
+        "Nucleo_metalico": 0.08,
+        "Sales_hidratadas": 0.02
+      },
+      "composition_confidence": "medium"
+    },
+    {
+      "id": "Ganymede",
+      "name_es": "Ganímedes",
+      "type": "natural_satellite",
+      "classification": "satellite_of_Jupiter",
+      "physical": {
+        "mass_kg": 1.4819e23,
+        "mean_radius_km": 2631.2,
+        "surface_gravity_m_s2": 1.428,
+        "density_g_cm3": 1.942,
+        "mean_surface_temp_K": 110.0,
+        "has_solid_surface": true
+      },
+      "orbit": {
+        "central_body": "Jupiter",
+        "semi_major_axis_km": 1070400,
+        "semi_major_axis_AU_equivalent": 0.007155,
+        "eccentricity": 0.0013,
+        "periapsis_km_approx": 1069008.48,
+        "apoapsis_km_approx": 1071791.52,
+        "orbital_period_days": 7.154553
+      },
+      "atmosphere": {
+        "type": "oxygen_exosphere",
+        "pressure_bar": 0.0,
+        "composition_fraction": {
+          "Oxigeno_traza": 1.0
+        }
+      },
+      "solid_composition_fraction": {
+        "Agua_Hielo": 0.5,
+        "Roca_silicatos": 0.35,
+        "Nucleo_metalico": 0.13,
+        "Sales_y_organicos": 0.02
+      },
+      "composition_confidence": "medium"
+    },
+    {
+      "id": "Callisto",
+      "name_es": "Calisto",
+      "type": "natural_satellite",
+      "classification": "satellite_of_Jupiter",
+      "physical": {
+        "mass_kg": 1.0759e23,
+        "mean_radius_km": 2410.3,
+        "surface_gravity_m_s2": 1.236,
+        "density_g_cm3": 1.834,
+        "mean_surface_temp_K": 134.0,
+        "has_solid_surface": true
+      },
+      "orbit": {
+        "central_body": "Jupiter",
+        "semi_major_axis_km": 1882700,
+        "semi_major_axis_AU_equivalent": 0.012585,
+        "eccentricity": 0.0074,
+        "periapsis_km_approx": 1868767.02,
+        "apoapsis_km_approx": 1896632.98,
+        "orbital_period_days": 16.689018
+      },
+      "atmosphere": {
+        "type": "CO2_tenuous",
+        "pressure_bar": 0.0,
+        "composition_fraction": {
+          "Dioxido_de_Carbono_traza": 0.8,
+          "Oxigeno_traza": 0.2
+        }
+      },
+      "solid_composition_fraction": {
+        "Agua_Hielo": 0.5,
+        "Roca_silicatos": 0.45,
+        "Dioxido_de_Carbono_Hielo_traza": 0.03,
+        "Organicos": 0.02
+      },
+      "composition_confidence": "medium"
+    },
+    {
+      "id": "Saturn",
+      "name_es": "Saturno",
+      "type": "planet",
+      "classification": "gas_giant",
+      "physical": {
+        "mass_kg": 5.68317e26,
+        "mean_radius_km": 58232.0,
+        "equatorial_radius_km": 60268.0,
+        "surface_gravity_m_s2": 10.44,
+        "density_g_cm3": 0.6871,
+        "axial_tilt_deg": 26.73,
+        "reference_temp_K": 134.0,
+        "escape_velocity_km_s": 36.09,
+        "geometric_albedo": 0.47,
+        "has_solid_surface": false,
+        "has_rings": true
+      },
+      "orbit": {
+        "central_body": "Sun",
+        "semi_major_axis_AU": 9.537,
+        "semi_major_axis_km": 1426844902.07,
+        "eccentricity": 0.05386179,
+        "perihelion_AU_approx": 9.0233,
+        "aphelion_AU_approx": 10.0507,
+        "orbital_period_years": 29.447498,
+        "rotation_period_days": 0.44401
+      },
+      "atmosphere": {
+        "type": "hydrogen_helium",
+        "reference_pressure_bar": 1.0,
+        "composition_fraction": {
+          "Hidrogeno": 0.963,
+          "Helio": 0.0325,
+          "Metano": 0.0045,
+          "Amoniaco_traza": 0.00012
+        }
+      },
+      "interior_composition_fraction": {
+        "Hidrogeno_molecular_y_metalico": 0.75,
+        "Helio": 0.18,
+        "Hielos_agua_amoniaco_metano": 0.04,
+        "Roca_metal_nucleo": 0.03
+      },
+      "composition_confidence": "medium_high"
+    },
+    {
+      "id": "Titan",
+      "name_es": "Titán",
+      "type": "natural_satellite",
+      "classification": "satellite_of_Saturn",
+      "physical": {
+        "mass_kg": 1.3452e23,
+        "mean_radius_km": 2574.7,
+        "surface_gravity_m_s2": 1.352,
+        "density_g_cm3": 1.88,
+        "mean_surface_temp_K": 94.0,
+        "has_solid_surface": true
+      },
+      "orbit": {
+        "central_body": "Saturn",
+        "semi_major_axis_km": 1221870,
+        "semi_major_axis_AU_equivalent": 0.008168,
+        "eccentricity": 0.0288,
+        "periapsis_km_approx": 1186680.14,
+        "apoapsis_km_approx": 1257059.86,
+        "orbital_period_days": 15.945421
+      },
+      "atmosphere": {
+        "type": "dense_nitrogen_methane",
+        "pressure_bar": 1.45,
+        "composition_fraction": {
+          "Nitrogeno": 0.984,
+          "Metano": 0.014,
+          "Hidrogeno": 0.001,
+          "Otros_hidrocarburos": 0.001
+        }
+      },
+      "solid_composition_fraction": {
+        "Agua_Hielo": 0.45,
+        "Roca_silicatos": 0.45,
+        "Hidrocarburos_superficie": 0.05,
+        "Otros_hielos": 0.05
+      },
+      "composition_confidence": "high"
+    },
+    {
+      "id": "Uranus",
+      "name_es": "Urano",
+      "type": "planet",
+      "classification": "ice_giant",
+      "physical": {
+        "mass_kg": 8.68099e25,
+        "mean_radius_km": 25362.0,
+        "equatorial_radius_km": 25559.0,
+        "surface_gravity_m_s2": 8.87,
+        "density_g_cm3": 1.27,
+        "axial_tilt_deg": 97.77,
+        "reference_temp_K": 76.0,
+        "escape_velocity_km_s": 21.38,
+        "geometric_albedo": 0.51,
+        "has_solid_surface": false,
+        "has_rings": true
+      },
+      "orbit": {
+        "central_body": "Sun",
+        "semi_major_axis_AU": 19.191,
+        "semi_major_axis_km": 2870992728.0,
+        "eccentricity": 0.04725744,
+        "perihelion_AU_approx": 18.2840,
+        "aphelion_AU_approx": 20.0980,
+        "orbital_period_years": 84.016846,
+        "rotation_period_days": -0.71833
+      },
+      "atmosphere": {
+        "type": "hydrogen_helium_methane",
+        "reference_pressure_bar": 1.0,
+        "composition_fraction": {
+          "Hidrogeno": 0.825,
+          "Helio": 0.152,
+          "Metano": 0.023
+        }
+      },
+      "interior_composition_fraction": {
+        "Agua_Hielo_fluido": 0.45,
+        "Amoniaco_Hielo_fluido": 0.15,
+        "Metano_Hielo_fluido": 0.15,
+        "Roca_silicatos_metal": 0.2,
+        "Hidrogeno_Helio": 0.05
+      },
+      "composition_confidence": "medium"
+    },
+    {
+      "id": "Neptune",
+      "name_es": "Neptuno",
+      "type": "planet",
+      "classification": "ice_giant",
+      "physical": {
+        "mass_kg": 1.024092e26,
+        "mean_radius_km": 24622.0,
+        "equatorial_radius_km": 24764.0,
+        "surface_gravity_m_s2": 11.15,
+        "density_g_cm3": 1.638,
+        "axial_tilt_deg": 28.32,
+        "reference_temp_K": 72.0,
+        "escape_velocity_km_s": 23.56,
+        "geometric_albedo": 0.41,
+        "has_solid_surface": false,
+        "has_rings": true
+      },
+      "orbit": {
+        "central_body": "Sun",
+        "semi_major_axis_AU": 30.07,
+        "semi_major_axis_km": 4498415991.95,
+        "eccentricity": 0.00859048,
+        "perihelion_AU_approx": 29.8117,
+        "aphelion_AU_approx": 30.3283,
+        "orbital_period_years": 164.79132,
+        "rotation_period_days": 0.67125
+      },
+      "atmosphere": {
+        "type": "hydrogen_helium_methane",
+        "reference_pressure_bar": 1.0,
+        "composition_fraction": {
+          "Hidrogeno": 0.8,
+          "Helio": 0.19,
+          "Metano": 0.01
+        }
+      },
+      "interior_composition_fraction": {
+        "Agua_Hielo_fluido": 0.45,
+        "Amoniaco_Hielo_fluido": 0.15,
+        "Metano_Hielo_fluido": 0.15,
+        "Roca_silicatos_metal": 0.22,
+        "Hidrogeno_Helio": 0.03
+      },
+      "composition_confidence": "medium"
+    },
+    {
+      "id": "Triton",
+      "name_es": "Tritón",
+      "type": "natural_satellite",
+      "classification": "satellite_of_Neptune",
+      "physical": {
+        "mass_kg": 2.14e22,
+        "mean_radius_km": 1353.4,
+        "surface_gravity_m_s2": 0.779,
+        "density_g_cm3": 2.061,
+        "mean_surface_temp_K": 38.0,
+        "has_solid_surface": true
+      },
+      "orbit": {
+        "central_body": "Neptune",
+        "semi_major_axis_km": 354759,
+        "semi_major_axis_AU_equivalent": 0.002371,
+        "eccentricity": 0.000016,
+        "periapsis_km_approx": 354753.32,
+        "apoapsis_km_approx": 354764.68,
+        "orbital_period_days": -5.876854,
+        "retrograde": true
+      },
+      "atmosphere": {
+        "type": "thin_N2_CH4",
+        "pressure_bar": 0.000014,
+        "composition_fraction": {
+          "Nitrogeno": 0.99,
+          "Metano": 0.01
+        }
+      },
+      "solid_composition_fraction": {
+        "Nitrogeno_Hielo": 0.35,
+        "Agua_Hielo": 0.35,
+        "Metano_Hielo": 0.05,
+        "Roca_silicatos": 0.23,
+        "Otros_volatiles": 0.02
+      },
+      "composition_confidence": "medium"
+    },
+    {
+      "id": "Pluto",
+      "name_es": "Plutón",
+      "type": "dwarf_planet",
+      "classification": "plutoid",
+      "physical": {
+        "mass_kg": 1.30246e22,
+        "mean_radius_km": 1188.3,
+        "surface_gravity_m_s2": 0.62,
+        "density_g_cm3": 1.853,
+        "axial_tilt_deg": 122.53,
+        "mean_surface_temp_K": 44.0,
+        "escape_velocity_km_s": 1.21,
+        "geometric_albedo": 0.3,
+        "has_solid_surface": true
+      },
+      "orbit": {
+        "central_body": "Sun",
+        "semi_major_axis_AU": 39.5,
+        "semi_major_axis_km": 5909115892.65,
+        "eccentricity": 0.2488,
+        "perihelion_AU_approx": 29.6724,
+        "aphelion_AU_approx": 49.3276,
+        "orbital_period_years": 247.92065,
+        "rotation_period_days": -6.3872
+      },
+      "atmosphere": {
+        "type": "seasonal_N2_CH4_CO",
+        "pressure_bar": 0.00001,
+        "composition_fraction": {
+          "Nitrogeno": 0.99,
+          "Metano": 0.005,
+          "Monoxido_de_Carbono": 0.005
+        }
+      },
+      "solid_composition_fraction": {
+        "Agua_Hielo": 0.45,
+        "Roca_silicatos": 0.35,
+        "Nitrogeno_Solido": 0.1,
+        "Metano_Hielo": 0.06,
+        "Monoxido_de_Carbono_Hielo": 0.04
+      },
+      "composition_confidence": "medium"
+    },
+    {
+      "id": "Charon",
+      "name_es": "Caronte",
+      "type": "natural_satellite",
+      "classification": "satellite_of_Pluto",
+      "physical": {
+        "mass_kg": 1.586e21,
+        "mean_radius_km": 606.0,
+        "surface_gravity_m_s2": 0.288,
+        "density_g_cm3": 1.7,
+        "mean_surface_temp_K": 53.0,
+        "has_solid_surface": true
+      },
+      "orbit": {
+        "central_body": "Pluto",
+        "semi_major_axis_km": 19591,
+        "semi_major_axis_AU_equivalent": 0.000131,
+        "eccentricity": 0.0002,
+        "periapsis_km_approx": 19587.08,
+        "apoapsis_km_approx": 19594.92,
+        "orbital_period_days": 6.38723
+      },
+      "atmosphere": {
+        "type": "none_detected",
+        "pressure_bar": 0.0,
+        "composition_fraction": {}
+      },
+      "solid_composition_fraction": {
+        "Agua_Hielo": 0.55,
+        "Roca_silicatos": 0.35,
+        "Amoniaco_Hidratos": 0.05,
+        "Compuestos_organicos": 0.05
+      },
+      "composition_confidence": "medium"
+    },
+    {
+      "id": "Haumea",
+      "name_es": "Haumea",
+      "type": "dwarf_planet",
+      "classification": "plutoid",
+      "physical": {
+        "mass_kg": 4.006e21,
+        "mean_radius_km": 715.0,
+        "equatorial_radius_km": 870.0,
+        "surface_gravity_m_s2": 0.44,
+        "density_g_cm3": 2.6,
+        "mean_surface_temp_K": 50.0,
+        "escape_velocity_km_s": 0.91,
+        "geometric_albedo": 0.7,
+        "has_solid_surface": true
+      },
+      "orbit": {
+        "central_body": "Sun",
+        "semi_major_axis_AU": 43.19,
+        "semi_major_axis_km": 6461142024.53,
+        "eccentricity": 0.1887,
+        "perihelion_AU_approx": 35.0401,
+        "aphelion_AU_approx": 51.3399,
+        "orbital_period_years": 284.81,
+        "rotation_period_days": 0.1631
+      },
+      "atmosphere": {
+        "type": "none_detected",
+        "pressure_bar": 0.0,
+        "composition_fraction": {}
+      },
+      "solid_composition_fraction": {
+        "Agua_Hielo_cristalina": 0.7,
+        "Roca_silicatos": 0.25,
+        "Compuestos_organicos_tholins": 0.03,
+        "Otros_hielos_traza": 0.02
+      },
+      "composition_confidence": "low_medium"
+    },
+    {
+      "id": "Makemake",
+      "name_es": "Makemake",
+      "type": "dwarf_planet",
+      "classification": "plutoid",
+      "physical": {
+        "mass_kg": 3.1e21,
+        "mean_radius_km": 714.0,
+        "equatorial_radius_km": 717.0,
+        "surface_gravity_m_s2": 0.4,
+        "density_g_cm3": 2.1,
+        "mean_surface_temp_K": 40.0,
+        "escape_velocity_km_s": 0.76,
+        "geometric_albedo": 0.81,
+        "has_solid_surface": true
+      },
+      "orbit": {
+        "central_body": "Sun",
+        "semi_major_axis_AU": 45.48,
+        "semi_major_axis_km": 6803551140.24,
+        "eccentricity": 0.159,
+        "perihelion_AU_approx": 38.2487,
+        "aphelion_AU_approx": 52.7113,
+        "orbital_period_years": 307.54,
+        "rotation_period_days": 0.937
+      },
+      "atmosphere": {
+        "type": "possible_seasonal_tenuous",
+        "pressure_bar": 0.0,
+        "composition_fraction": {
+          "Metano_posible_traza": 1.0
+        }
+      },
+      "solid_composition_fraction": {
+        "Metano_Hielo": 0.55,
+        "Etano_y_otros_hidrocarburos": 0.1,
+        "Nitrogeno_Hielo_traza": 0.05,
+        "Agua_Hielo": 0.15,
+        "Roca_silicatos": 0.15
+      },
+      "composition_confidence": "low_medium"
+    },
+    {
+      "id": "Eris",
+      "name_es": "Eris",
+      "type": "dwarf_planet",
+      "classification": "plutoid_scattered_disk",
+      "physical": {
+        "mass_kg": 1.66e22,
+        "mean_radius_km": 1200.0,
+        "surface_gravity_m_s2": 0.77,
+        "density_g_cm3": 2.3,
+        "mean_surface_temp_K": 42.0,
+        "escape_velocity_km_s": 1.36,
+        "geometric_albedo": 0.84,
+        "has_solid_surface": true
+      },
+      "orbit": {
+        "central_body": "Sun",
+        "semi_major_axis_AU": 67.84,
+        "semi_major_axis_km": 10149839546.29,
+        "eccentricity": 0.44,
+        "perihelion_AU_approx": 37.9904,
+        "aphelion_AU_approx": 97.6896,
+        "orbital_period_years": 557.56,
+        "rotation_period_days": 1.079
+      },
+      "atmosphere": {
+        "type": "collapsed_or_extremely_tenuous_seasonal",
+        "pressure_bar": 0.0,
+        "composition_fraction": {
+          "Metano_posible_traza": 0.7,
+          "Nitrogeno_posible_traza": 0.3
+        }
+      },
+      "solid_composition_fraction": {
+        "Metano_Hielo": 0.45,
+        "Nitrogeno_Hielo": 0.2,
+        "Agua_Hielo": 0.15,
+        "Roca_silicatos": 0.18,
+        "Otros_volatiles": 0.02
+      },
+      "composition_confidence": "low_medium"
+    },
+    {
+      "id": "Orcus",
+      "name_es": "Orcus",
+      "type": "dwarf_planet_candidate",
+      "classification": "plutoid_candidate",
+      "physical": {
+        "mass_kg": 6.4e20,
+        "mean_radius_km": 473.0,
+        "surface_gravity_m_s2": null,
+        "density_g_cm3": 1.5,
+        "mean_surface_temp_K": 44.0,
+        "has_solid_surface": true
+      },
+      "orbit": {
+        "central_body": "Sun",
+        "semi_major_axis_AU": 39.17,
+        "semi_major_axis_km": 5859748595.32,
+        "eccentricity": 0.227,
+        "perihelion_AU_approx": 30.2764,
+        "aphelion_AU_approx": 48.0636,
+        "orbit_data_quality": "approx_candidate"
+      },
+      "atmosphere": {
+        "type": "none_detected",
+        "pressure_bar": 0.0,
+        "composition_fraction": {}
+      },
+      "solid_composition_fraction": {
+        "Agua_Hielo": 0.45,
+        "Roca_silicatos": 0.45,
+        "Metano_o_Amoniaco_trazas": 0.05,
+        "Organicos": 0.05
+      },
+      "composition_confidence": "low"
+    },
+    {
+      "id": "Quaoar",
+      "name_es": "Quaoar",
+      "type": "dwarf_planet_candidate",
+      "classification": "plutoid_candidate",
+      "physical": {
+        "mass_kg": 1.4e21,
+        "mean_radius_km": 555.0,
+        "surface_gravity_m_s2": null,
+        "density_g_cm3": 2.0,
+        "mean_surface_temp_K": 44.0,
+        "has_solid_surface": true
+      },
+      "orbit": {
+        "central_body": "Sun",
+        "semi_major_axis_AU": 43.69,
+        "semi_major_axis_km": 6535940960.88,
+        "eccentricity": 0.039,
+        "perihelion_AU_approx": 41.9861,
+        "aphelion_AU_approx": 45.3939,
+        "orbit_data_quality": "approx_candidate"
+      },
+      "atmosphere": {
+        "type": "none_detected",
+        "pressure_bar": 0.0,
+        "composition_fraction": {}
+      },
+      "solid_composition_fraction": {
+        "Roca_silicatos": 0.5,
+        "Agua_Hielo": 0.35,
+        "Metano_Hielo_traza": 0.05,
+        "Organicos_tholins": 0.1
+      },
+      "composition_confidence": "low"
+    },
+    {
+      "id": "Gonggong",
+      "name_es": "Gonggong",
+      "type": "dwarf_planet_candidate",
+      "classification": "scattered_disk_candidate",
+      "physical": {
+        "mass_kg": 1.75e21,
+        "mean_radius_km": 615.0,
+        "surface_gravity_m_s2": null,
+        "density_g_cm3": 1.7,
+        "mean_surface_temp_K": 40.0,
+        "has_solid_surface": true
+      },
+      "orbit": {
+        "central_body": "Sun",
+        "semi_major_axis_AU": 67.38,
+        "semi_major_axis_km": 10081064525.16,
+        "eccentricity": 0.5,
+        "perihelion_AU_approx": 33.69,
+        "aphelion_AU_approx": 101.07,
+        "orbit_data_quality": "approx_candidate"
+      },
+      "atmosphere": {
+        "type": "none_detected",
+        "pressure_bar": 0.0,
+        "composition_fraction": {}
+      },
+      "solid_composition_fraction": {
+        "Agua_Hielo": 0.4,
+        "Roca_silicatos": 0.4,
+        "Metano_Hielo": 0.1,
+        "Compuestos_organicos": 0.1
+      },
+      "composition_confidence": "low"
+    },
+    {
+      "id": "Sedna",
+      "name_es": "Sedna",
+      "type": "dwarf_planet_candidate",
+      "classification": "detached_object_candidate",
+      "physical": {
+        "mass_kg": null,
+        "mean_radius_km": 500.0,
+        "surface_gravity_m_s2": null,
+        "density_g_cm3": null,
+        "mean_surface_temp_K": 20.0,
+        "has_solid_surface": true
+      },
+      "orbit": {
+        "central_body": "Sun",
+        "semi_major_axis_AU": 506.0,
+        "semi_major_axis_km": 75696482574.2,
+        "eccentricity": 0.85,
+        "perihelion_AU_approx": 75.9,
+        "aphelion_AU_approx": 936.1,
+        "orbit_data_quality": "approx_candidate"
+      },
+      "atmosphere": {
+        "type": "none_detected",
+        "pressure_bar": 0.0,
+        "composition_fraction": {}
+      },
+      "solid_composition_fraction": {
+        "Metano_Hielo": 0.3,
+        "Nitrogeno_Hielo": 0.2,
+        "Agua_Hielo": 0.2,
+        "Roca_silicatos": 0.2,
+        "Tholins": 0.1
+      },
+      "composition_confidence": "very_low"
+    }
+  ]
+}

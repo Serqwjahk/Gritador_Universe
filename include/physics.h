@@ -10,6 +10,7 @@
 #include "rocky_planets.h"
 #include "composition.h"
 #include "thread_pool.h"
+#include "stellar_evolution.h"
 #include <algorithm>
 
 // ============================================================
@@ -62,12 +63,30 @@ inline int CountActiveDust(const std::vector<DustParticle>& dust) {
 // los primeros slots del pool ya estan ocupados. Devuelve -1 si el pool
 // esta lleno (no deberia ocurrir: 'availableDust' en MakeFragments ya limita
 // numDust al espacio libre).
+// Mas alto indice de slot jamas asignado +1 ("marca de agua"): el pool
+// (dustField, ver main.cpp) se PRE-ASIGNA completo a MAX_DUST_PARTICLES
+// (200000) desde el arranque, pero una partida tipica usa solo una
+// fraccion pequeña de eso -- sin esta marca, UpdateDustGravity/
+// UpdateDustIntelligence/UpdateDustLifecycle recorrian las 200000 casillas
+// EN CADA LLAMADA (UpdateDustGravity hasta 64 veces por frame a velocidad
+// alta, ver PHYS_MAX_SUBSTEPS_PER_FRAME/StepPhysics) sin importar que casi
+// todas estuvieran inactivas desde el inicio de la partida -- el costo
+// dominante de StepPhysics incluso con un solo cuerpo y CERO polvo
+// generado, y la razon de que subir la velocidad de simulacion por encima
+// de x1 hundiera el framerate. Nunca decrece (no hace falta: solo acota
+// el barrido a "lo mas lejos que se ha usado alguna vez", no al recuento
+// de activos actual) -- una sesion que use los anillos de Saturno una vez
+// se queda con la marca alta el resto de la partida, pero sigue siendo
+// muchisimo mejor que recorrer las 200000 casillas siempre.
+static int g_dustHighWaterMark = 0;
+
 inline int FindFreeDustSlot(std::vector<DustParticle>& dust, int& cursor) {
     const int n = (int)dust.size();
     for (int i = 0; i < n; ++i) {
         int idx = (cursor + i) % n;
         if (!dust[idx].active) {
             cursor = (idx + 1) % n;
+            if (idx + 1 > g_dustHighWaterMark) g_dustHighWaterMark = idx + 1;
             return idx;
         }
     }
@@ -197,6 +216,7 @@ inline void SpawnPlanetaryRing(const Body& planet, std::vector<DustParticle>& du
         d.state = DustState::RingParticle;
         d.stableOrbitTime = 3600.0 * 24.0;
         d.hostBodyId = (int64_t)planet.id;
+        d.spawnRadiusFromHost = (float)r;
 
         double axisCosT = 2.0 * FastRand01() - 1.0;
         double axisSinT = std::sqrt(std::max(0.0, 1.0 - axisCosT*axisCosT));
@@ -940,12 +960,97 @@ static void MergeBodies(std::vector<Body>& bodies, std::vector<DustParticle>& du
     if (anyStar) {
         bodies[majIdx].pos    = newPos;
         bodies[majIdx].vel    = newVel;
-        bodies[majIdx].temperature = std::max(bodies[majIdx].temperature, bodies[minIdx].temperature) + globalHeatGain;
         bodies[majIdx].heatSpike = 1.0f;
-        bodies[majIdx].mass    = totalMass;
-        bodies[majIdx].radius  = R_SUN * std::pow(std::max(0.08, totalMass / M_SUN), 0.8);
-        bodies[majIdx].isStar    = true;
-        bodies[majIdx].isFragment = false;
+
+        // Solo se trata como FUSION ESTELAR real (con renacimiento tipo
+        // "blue straggler", radio/luminosidad/fase reseteados via la
+        // formula generica de masa) si el cuerpo menor aporta una masa
+        // no despreciable -- mismo umbral del 1% que ya usa
+        // ApplyTidesAndRoche para decidir "fuente de marea dominante".
+        // SIN esto, una supergigante (radio ENORME, 700-2150 R☉ ->
+        // sección transversal gigantesca) tarde o temprano choca con
+        // CUALQUIER escombro/asteroide/fragmento que pase cerca, y cada
+        // impacto -- sin importar cuan insignificante la masa ganada --
+        // reseteaba la estrella ENTERA a una version diminuta y azul de
+        // secuencia principal (R_SUN*mRatio^0.6 para 10-15 M☉ da solo
+        // ~5-8 R☉, muchisimo menor que su radio real). Un impacto
+        // trivial ahora solo suma masa, sin tocar fase/radio/luminosidad.
+        bool meaningfulMerger = (bodies[minIdx].mass >= bodies[majIdx].mass * 0.01);
+        if (!meaningfulMerger) {
+            bodies[majIdx].mass += bodies[minIdx].mass;
+            bodies[minIdx].mass  = 0.0;
+            return;
+        }
+
+        // Radio según rango de masa (relación masa-radio más precisa)
+        double mRatioNew = std::max(0.08, totalMass / M_SUN);
+        double newR = (mRatioNew < 2.0)  ? R_SUN * std::pow(mRatioNew, 0.8)
+                    : (mRatioNew < 50.0) ? R_SUN * std::pow(mRatioNew, 0.6)
+                                          : R_SUN * std::pow(mRatioNew, 0.5);
+
+        // Rejuvenecimiento ("blue straggler"): combustible gastado ponderado por masa
+        double tMSA = StellarMSLifetime(bodies[majIdx].initialStellarMass);
+        double tMSB = StellarMSLifetime(bodies[minIdx].initialStellarMass);
+        double fracA = ClampD(bodies[majIdx].stellarAge / std::max(1.0, tMSA), 0.0, 1.0);
+        double fracB = ClampD(bodies[minIdx].stellarAge / std::max(1.0, tMSB), 0.0, 1.0);
+        double spentFrac = (fracA * bodies[majIdx].mass + fracB * bodies[minIdx].mass) / totalMass;
+        double newFrac   = std::clamp(spentFrac - 0.15, 0.0, 0.98);
+        double newAge    = newFrac * StellarMSLifetime(totalMass);
+
+        // Hash combinado para efectiveSNThreshold de la nueva estrella
+        uint64_t combinedId = bodies[majIdx].id ^ (bodies[minIdx].id * 2654435761ull);
+
+        bodies[majIdx].mass               = totalMass;
+        bodies[majIdx].initialStellarMass = totalMass;
+        bodies[majIdx].effectiveSNThreshold = 8.0
+            + (double)((combinedId % 300)) / 100.0 - 1.5;
+        bodies[majIdx].radius             = newR;
+        double newLum = L_SUN * std::pow(mRatioNew, 3.5);
+        bodies[majIdx].baseLuminosity     = newLum;
+        bodies[majIdx].visualLuminosity   = newLum;
+        bodies[majIdx].luminosity         = newLum;
+        bodies[majIdx].stellarAge         = newAge;
+        bodies[majIdx].stellarPhase       = StellarPhase::MAIN_SEQUENCE;
+        bodies[majIdx].stellarPhaseAge    = 0.0;
+        bodies[majIdx].isStar             = true;
+        bodies[majIdx].isFragment         = false;
+        // Resetear estados residuales de SN/remanente
+        bodies[majIdx].isSupernovaRemnant = false;
+        bodies[majIdx].supernovaProgress  = 0.0;
+        bodies[majIdx].supernovaRadius    = 0.0;
+        bodies[majIdx].gravityEnabled     = true;
+        bodies[majIdx].collisionEnabled   = true;
+        bodies[majIdx].stellarManualOverride = false; // la nueva estrella auto-evoluciona
+
+        // Conservar momento angular: L = I*omega, I ∝ M*R²
+        // L_maj + L_min = (M_maj*R_maj² + M_min*R_min²)*omega_new
+        // omega (rad/s) = spinRateDeg * PI/180 / 1200
+        {
+            double omegaMaj = (double)bodies[majIdx].spinRateDeg * (PI_D/180.0) / 1200.0;
+            double omegaMin = (double)bodies[minIdx].spinRateDeg * (PI_D/180.0) / 1200.0;
+            double R_maj = bodies[majIdx].radius; // radio ANTES de sobreescribirse
+            // (bodies[majIdx].radius fue sobreescrito a newR arriba, usar el guardado)
+            // En realidad newR ya está en bodies[majIdx].radius tras la linea 1007.
+            // Usar R_maj0 (guardado al inicio de MergeBodies) y radio del minIdx.
+            double L = mA * R_maj0 * R_maj0 * omegaMaj
+                     + mB * bodies[minIdx].radius * bodies[minIdx].radius * omegaMin;
+            double I_new = totalMass * newR * newR;
+            double omegaNew = (I_new > 0.0) ? L / I_new : 0.0;
+            bodies[majIdx].spinRateDeg = (float)(omegaNew * 1200.0 * (180.0 / PI_D));
+        }
+        // Recalcular criticalRotationFraction inmediatamente para evitar que
+        // ApplyRotationalBreakup vea el valor obsoleto del pulsar (0.99) en
+        // el primer frame y consuma toda la masa del cuerpo recien fusionado.
+        {
+            double omega = (double)bodies[majIdx].spinRateDeg * (PI_D/180.0) / 1200.0;
+            double omegaCrit = (newR > 0 && totalMass > 0)
+                ? std::sqrt(G * totalMass / (newR * newR * newR)) : 1.0;
+            bodies[majIdx].criticalRotationFraction =
+                (float)ClampD(omega / omegaCrit, 0.0, 0.99);
+        }
+        bodies[majIdx].axialTilt = 0.0f; // nueva estrella sin inclinacion heredada
+
+        // Temperatura recalculada por Stefan-Boltzmann en UpdateBodiesState
         bodies[minIdx].mass   = 0.0;
         return;
     }
@@ -1168,6 +1273,176 @@ static void LeapfrogStep(std::vector<Body>& bodies, double dt) {
     for (Body& b : bodies) if (!b.fixed) b.vel += b.acc * (0.5 * dt);
 }
 
+// ── Física de rotación crítica (breakup / mass shedding) ─────
+// Cuando un objeto gira demasiado rápido para su gravedad superficial,
+// el material del ecuador empieza a escapar. El umbral depende del tipo:
+//   • NS/pulsar/magnetar: ~0.99 (ultracompactos, gravedad enorme)
+//   • Estrellas:          ~0.65
+//   • Gigantes gaseosos:  ~0.55
+//   • Rocosos/helados:    ~0.50
+// Por encima del umbral visual, la función expulsa polvo ecuatorial y
+// reduce la masa progresivamente. La oblateness ya escala con
+// criticalRotationFraction via RotationalOblateness (renderer.h).
+inline void ApplyRotationalBreakup(Body& b, std::vector<DustParticle>& dust, double dt)
+{
+    // criticalRotationFraction se calcula en ApplyStellarPhaseProperties;
+    // para no-estrellas lo recomputamos aqui.
+    if (b.mass <= 0.0 || b.radius <= 0.0) return;
+
+    float crf = b.criticalRotationFraction;
+    if (crf <= 0.0f) {
+        // Calcular para cuerpos no-estrella (estrellas lo tienen calculado ya)
+        if (!b.isStar) {
+            double omega = (double)b.spinRateDeg * (PI_D / 180.0) / 1200.0;
+            double omegaCrit = std::sqrt(G * b.mass / (b.radius * b.radius * b.radius));
+            crf = (float)ClampD(omega / omegaCrit, 0.0, 0.99);
+            b.criticalRotationFraction = crf;
+        }
+    }
+
+    // Umbral por tipo de objeto
+    float breakupThreshold;
+    if (b.stellarPhase == StellarPhase::NEUTRON_STAR ||
+        b.stellarPhase == StellarPhase::PULSAR        ||
+        b.stellarPhase == StellarPhase::MAGNETAR) {
+        breakupThreshold = 0.99f;  // ultracompactos: casi imposible romper
+    } else if (b.isStar) {
+        breakupThreshold = 0.65f;  // estrellas
+    } else if (b.isGasGiant) {
+        breakupThreshold = 0.55f;  // gigantes gaseosos (menos densos)
+    } else {
+        breakupThreshold = 0.50f;  // rocosos/helados
+    }
+
+    if (crf < breakupThreshold * 0.85f) return; // bien por debajo del umbral, nada que hacer
+
+    // Zona de shedding: entre 85% y 100% del umbral
+    float severity = ClampD((crf - breakupThreshold * 0.85) /
+                             (breakupThreshold * 0.15), 0.0, 1.0);
+
+    // Tasa de pérdida de masa: exponencial con la severidad
+    // Para objetos en el límite critico pierden hasta ~0.1% de masa por segundo sim.
+    // Tasa conservadora: max 0.01% de masa por paso de simulacion.
+    // El bug critico de "masa → 0 en segundos" ocurria cuando el
+    // spinRateDeg heredado de un pulsar (1.29e7) llegaba a un cuerpo
+    // 10^5 veces mayor tras una fusion, saturando criticalRotation=0.99;
+    // esto queda resuelto con la conservacion de momento angular en
+    // MergeBodies. El limite aqui es una segunda linea de defensa.
+    double massLossRate = 0.00001 * severity * severity * b.mass;
+    double massLoss = massLossRate * dt;
+    massLoss = std::min(massLoss, b.mass * 0.0001); // max 0.01% por paso
+
+    if (massLoss > 0.0) {
+        b.mass        -= massLoss;
+        b.intactMass   = b.mass;
+        // Masa perdida → polvo ecuatorial (eyeccion en el plano ecuatorial)
+        int nParticles = (int)(severity * 8.0) + 1;
+        for (int k = 0; k < nParticles; k++) {
+            int slot = FindFreeDustSlot(dust, g_dustPoolCursor);
+            if (slot < 0) break;
+            DustParticle& d = dust[slot];
+            d.active    = true;
+            d.isRing    = false;
+            d.hostBodyId= -1;
+            d.heatSpike = 0.3f + 0.7f * (float)severity;
+
+            // Color segun temperatura/tipo del cuerpo
+            if (b.isStar)
+                d.color = {255, (uint8_t)(150 + (int)(severity * 80)), 50, 255};
+            else if (b.isGasGiant)
+                d.color = {200, 150, 100, 255};
+            else
+                d.color = {180, 160, 140, 255};
+
+            // Eyectar en el plano ecuatorial real del cuerpo:
+            // el eje de rotacion esta definido por axialTilt (inclinacion
+            // respecto a Y) y rotationAngle (fase actual de la rotacion).
+            // El plano ecuatorial es perpendicular a ese eje.
+            double tiltR  = (double)b.axialTilt  * PI_D / 180.0;
+            double rotR   = (double)b.rotationAngle * PI_D / 180.0;
+            // Eje de rotacion (polo norte del objeto)
+            Vector3D poleAxis = {
+                std::sin(tiltR) * std::cos(rotR),
+                std::cos(tiltR),
+                std::sin(tiltR) * std::sin(rotR)
+            };
+            // Vector perpendicular al polo (en el plano ecuatorial)
+            Vector3D eqRef = { -poleAxis.y, poleAxis.x, 0.0 };
+            double eqRefLen = eqRef.length();
+            if (eqRefLen < 1e-6) eqRef = { 1.0, 0.0, 0.0 };
+            else                  eqRef = eqRef / eqRefLen;
+            // Rotar eqRef un angulo aleatorio alrededor del polo → punto aleatorio en ecuador
+            double angle = FastRand01() * 2.0 * PI_D;
+            // Rodrigues rotation formula para rotar eqRef alrededor de poleAxis
+            double cosA = std::cos(angle), sinA = std::sin(angle);
+            Vector3D ejectDir = eqRef * cosA
+                              + Cross(poleAxis, eqRef) * sinA
+                              + poleAxis * (poleAxis.dot(eqRef) * (1.0 - cosA));
+            // Pequeno componente vertical aleatorio (~5%) para dar volumen al disco
+            ejectDir = ejectDir + poleAxis * ((FastRand01() - 0.5) * 0.05);
+            double edLen = ejectDir.length();
+            if (edLen > 1e-9) ejectDir = ejectDir / edLen;
+
+            double vEsc  = std::sqrt(G * b.mass / b.radius);
+            double speed = vEsc * (0.3 + FastRand01() * 0.4);
+            d.pos = b.pos + ejectDir * b.radius * 1.05;
+            d.vel = b.vel + ejectDir * speed;
+
+            double pR = b.radius * (0.005 + FastRand01() * 0.02);
+            d.scale  = (float)(pR * RENDER_SCALE);
+            d.radius = pR;
+            d.seed   = (float)FastRand01();
+            d.spawnRadiusFromHost = 0.0f;
+        }
+    }
+
+    // Si supera el 99% del umbral critico, desestabilizacion severa:
+    // velocidad de spin empieza a caer (el cuerpo pierde momento angular
+    // con el material eyectado) — evita que siga acelerando infinitamente.
+    if (crf > breakupThreshold * 0.99f) {
+        b.spinRateDeg *= (float)(1.0 - 0.001 * dt / 1200.0);
+    }
+}
+
+// ── Definición de SpawnSupernovaEjecta (declarada en stellar_evolution.h) ──
+inline void SpawnSupernovaEjecta(std::vector<Body>& bodies, std::vector<DustParticle>& dust,
+                                  const Body& b)
+{
+    (void)bodies; // reservado para empujar cuerpos vecinos en v2
+    int ejectedCount = 0;
+    constexpr int MAX_EJECTA = 200;
+    for (int attempt = 0; attempt < 600 && ejectedCount < MAX_EJECTA; ++attempt) {
+        int slot = FindFreeDustSlot(dust, g_dustPoolCursor);
+        if (slot < 0) break;
+
+        DustParticle& d = dust[slot];
+        d.active     = true;
+        d.isRing     = false;
+        d.hostBodyId = -1;
+        d.heatSpike  = 1.0f;
+        d.color      = {255, 180, 80, 255};
+        d.seed       = (float)FastRand01();
+
+        double cosT  = FastRand01() * 2.0 - 1.0;
+        double sinT  = std::sqrt(std::max(0.0, 1.0 - cosT * cosT));
+        double phi   = FastRand01() * 2.0 * PI_D;
+        Vector3D dir = { sinT * std::cos(phi), cosT, sinT * std::sin(phi) };
+        double speed = 1e6 + FastRand01() * 2.9e7;
+        d.pos        = b.pos + dir * b.radius * 1.1;
+        d.vel        = b.vel + dir * speed;
+        double pR    = 2000.0 + FastRand01() * 8000.0;
+        d.scale      = (float)(pR * RENDER_SCALE);
+        d.radius     = pR;
+        double axC   = 2.0*FastRand01()-1.0, axS = std::sqrt(std::max(0.0,1.0-axC*axC));
+        double axP   = 2.0*PI_D*FastRand01();
+        d.rotationAxis = {(float)(axS*std::cos(axP)),(float)axC,(float)(axS*std::sin(axP))};
+        d.rotationSpeed   = (float)((FastRand01()-0.5)*2.0);
+        d.currentRotation = (float)(FastRand01()*2.0*PI_D);
+        d.spawnRadiusFromHost = 0.0f;
+        ++ejectedCount;
+    }
+}
+
 // ── Mareas y límite de Roche ────────────────────────────────
 static void ApplyTidesAndRoche(std::vector<Body>& bodies, std::vector<DustParticle>& dust, double dt)
 {
@@ -1300,7 +1575,8 @@ static void ApplyTidesAndRoche(std::vector<Body>& bodies, std::vector<DustPartic
         // alrededor del cuerpo dominante (bestSource), hasta quedar en
         // resonancia 1:1 (rotacion sincrona, siempre la misma cara
         // mirando al perturbador) -- igual que la Luna con la Tierra.
-        if (bestSource && !b.isStar) {
+        // Las estrellas también se deforman y pueden bloquearse en binarias.
+        if (bestSource) {
             Vector3D d    = bestSource->pos - b.pos;
             Vector3D dvel = bestSource->vel - b.vel;
             double   r2   = d.x*d.x + d.z*d.z;
@@ -1483,6 +1759,86 @@ static void ApplyTidesAndRoche(std::vector<Body>& bodies, std::vector<DustPartic
     }
 
     if (!newBodies.empty()) bodies.insert(bodies.end(), newBodies.begin(), newBodies.end());
+
+    // ── Transferencia de masa Roche en binarias estelares (Eggleton 1983) ───
+    // Acumuladores para evitar invalidación de punteros y doble conteo.
+    static std::vector<double> pendingMassRoche;
+    pendingMassRoche.assign(bodies.size(), 0.0);
+
+    constexpr double ROCHE_TRANSFER_RATE = 1e-9; // fracción de masa/s (muy lento por defecto)
+
+    for (size_t i = 0; i < bodies.size(); ++i) {
+        Body& b = bodies[i];
+        if (!b.isStar || b.mass <= 0.0 || !b.gravityEnabled) continue;
+
+        // Buscar la estrella compañera más cercana y masiva
+        size_t bestJ = SIZE_MAX;
+        double bestDist2 = 1e99;
+        for (size_t j = 0; j < bodies.size(); ++j) {
+            if (i == j || !bodies[j].isStar || bodies[j].mass <= 0.0) continue;
+            double d2 = (b.pos - bodies[j].pos).lengthSqr();
+            if (d2 < bestDist2) { bestDist2 = d2; bestJ = j; }
+        }
+        if (bestJ == SIZE_MAX) continue;
+
+        double separation = std::sqrt(bestDist2);
+        if (separation < 1.0) continue;
+
+        // Fórmula de Eggleton (1983): R_L / a = 0.49q^(2/3) / (0.6q^(2/3) + ln(1+q^(1/3)))
+        double q = b.mass / bodies[bestJ].mass;
+        double rocheRadius = EggletonsRocheLobe(q, separation);
+
+        if (b.radius < rocheRadius) continue; // estrella dentro de su lóbulo
+
+        // Transferencia proporcional al desbordamiento
+        double overflow = (b.radius - rocheRadius) / rocheRadius; // 0..1 aprox
+        double massDt   = std::min(b.mass * ROCHE_TRANSFER_RATE * overflow * dt, b.mass * 0.005);
+        if (massDt <= 0.0) continue;
+
+        pendingMassRoche[i]    -= massDt;
+        pendingMassRoche[bestJ] += massDt;
+
+        // Partículas de plasma en el punto L1 (aproximación visual)
+        // L1 ≈ a × (1 - q^(1/3)/3) desde la estrella más masiva
+        double rl1Frac = 1.0 - std::pow(bodies[bestJ].mass / (b.mass + bodies[bestJ].mass), 1.0 / 3.0) / 3.0;
+        Vector3D l1Pos = bodies[bestJ].pos + (b.pos - bodies[bestJ].pos) * rl1Frac;
+
+        int spawned = 0;
+        for (int attempt = 0; attempt < 30 && spawned < 5; ++attempt) {
+            int slot = FindFreeDustSlot(dust, g_dustPoolCursor);
+            if (slot < 0) break;
+            DustParticle& d = dust[slot];
+            d.active        = true;
+            d.isRing        = false;
+            d.hostBodyId    = -1;
+            d.heatSpike     = 0.8f;
+            d.color         = {255, 140, 60, 255};
+            d.seed          = (float)FastRand01();
+            d.pos           = l1Pos;
+            // Velocidad: tangencial orbital + componente hacia la receptora
+            Vector3D toAccretor = NormalizeSafe(bodies[bestJ].pos - l1Pos);
+            Vector3D velTan     = b.vel * 0.5 + bodies[bestJ].vel * 0.5;
+            d.vel = velTan + toAccretor * (massDt * 1e6 / std::max(1.0, dt));
+            double pRadiusM = 500.0 + FastRand01() * 2000.0;
+            d.scale  = (float)(pRadiusM * RENDER_SCALE);
+            d.radius = pRadiusM;
+            double ax = 2.0*FastRand01()-1.0, aSinT = std::sqrt(std::max(0.0,1.0-ax*ax));
+            double aP = 2.0*PI_D*FastRand01();
+            d.rotationAxis = {(float)(aSinT*std::cos(aP)),(float)ax,(float)(aSinT*std::sin(aP))};
+            d.rotationSpeed   = (float)((FastRand01()-0.5)*2.0);
+            d.currentRotation = 0.0f;
+            d.spawnRadiusFromHost = 0.0f;
+            ++spawned;
+        }
+    }
+
+    // Aplicar transferencias acumuladas
+    for (size_t i = 0; i < bodies.size() && i < pendingMassRoche.size(); ++i) {
+        if (pendingMassRoche[i] == 0.0) continue;
+        bodies[i].mass         += pendingMassRoche[i];
+        if (bodies[i].mass > 0.0 && bodies[i].isStar)
+            bodies[i].baseLuminosity = L_SUN * std::pow(bodies[i].mass / M_SUN, 3.5);
+    }
 }
 
 // ── Inteligencia de polvo: ligadura orbital, anillos y acrecion ─────────
@@ -1610,8 +1966,13 @@ static void UpdateDustIntelligence(
     constexpr double RADIAL_DAMP  = 4.0e-3;
 
     // 1) Clasificacion orbital + asentamiento ecuatorial.
-
-    for (DustParticle& d : dust) {
+    // Acotado a g_dustHighWaterMark (ver FindFreeDustSlot mas arriba), no
+    // dust.size(): el pool esta preasignado a MAX_DUST_PARTICLES completo
+    // desde el arranque, recorrerlo entero aqui cuando casi todo esta
+    // inactivo es puro desperdicio.
+    int dustRange1 = std::min((int)dust.size(), g_dustHighWaterMark);
+    for (int di = 0; di < dustRange1; ++di) {
+        DustParticle& d = dust[di];
         if (!d.active) continue;
 
         if (d.isRing || d.state == DustState::RingParticle) {
@@ -1695,10 +2056,12 @@ static void UpdateDustIntelligence(
     constexpr double MIN_PROTO_MASS = 5.0e16;
     constexpr double MAX_DISPERSION_FRAC = 0.75;
 
-    std::unordered_map<DustGridKey, std::vector<int>, DustGridKeyHash> grid;
-    grid.reserve(dust.size());
+    int dustRange2 = std::min((int)dust.size(), g_dustHighWaterMark);
 
-    for (int i = 0; i < (int)dust.size(); ++i) {
+    std::unordered_map<DustGridKey, std::vector<int>, DustGridKeyHash> grid;
+    grid.reserve((size_t)dustRange2);
+
+    for (int i = 0; i < dustRange2; ++i) {
         DustParticle& d = dust[i];
 
         if (!d.active) continue;
@@ -1868,7 +2231,8 @@ static void UpdateDustGravity(std::vector<DustParticle>& dust,
     }
 
     DustParticle* data = dust.data();
-    GetThreadPool().ParallelFor((int)dust.size(), [data, &sources, sourceCount, &bodies, h](int i) {
+    int activeRange = std::min((int)dust.size(), g_dustHighWaterMark);
+    GetThreadPool().ParallelFor(activeRange, [data, &sources, sourceCount, &bodies, h](int i) {
         DustParticle& d = data[i];
         if (!d.active) return; // slot libre del pool: nada que actualizar
 
@@ -1883,29 +2247,77 @@ static void UpdateDustGravity(std::vector<DustParticle>& dust,
             }
 
             if (host && host->mass > 0.0 && host->radius > 0.0) {
-                Vector3D rel = d.pos - host->pos;
-                double r = std::max(1.0, rel.length());
+                // Gravedad real (host + 'sources'), SIN forzar ninguna
+                // forma de orbita: nada de circulo perfecto recalculado
+                // cada paso. La particula simplemente cae bajo la atraccion
+                // real de su host (que domina, por eso "es" un anillo) MAS
+                // la de cualquier otro cuerpo masivo cercano -- si un
+                // planeta o la estrella pasan cerca, esta MISMA suma ya la
+                // perturba, dispersa o desliga con total naturalidad, sin
+                // necesidad de un criterio de disrupcion aparte.
+                //
+                // El unico cuidado real es de RESOLUCION TEMPORAL: un
+                // anillo orbita muy cerca y muy rapido (cerca del limite de
+                // Roche), con un periodo mucho menor que el de cualquier
+                // planeta. Integrar eso con el mismo paso 'h' del resto del
+                // motor (pensado para escalas planetarias, hasta 2400s a
+                // velocidad de simulacion maxima) haria que la orbita se
+                // vuelva inestable (gane o pierda energia cada vuelta) NO
+                // porque la fisica este mal, sino por resolucion
+                // insuficiente -- exactamente igual que cualquier
+                // integrador orbital real necesita mas pasos por vuelta
+                // cuanto mas cerrada es la orbita. La solucion correcta no
+                // es fingir la forma: es dar mas sub-pasos LOCALES, sin
+                // tocar la fisica ni el resto del motor.
+                Vector3D rel0 = d.pos - host->pos;
+                double   r0   = std::max(1.0, rel0.length());
 
-                if (r <= host->radius * 1.05) {
+                double period = 2.0 * PI_D * std::sqrt(
+                    (r0 * r0 * r0) / std::max(1.0, G * host->mass));
+
+                constexpr int ORBIT_STEPS_PER_REV = 48; // resolucion angular minima por vuelta
+                constexpr int MAX_MICROSTEPS      = 512; // techo de costo por particula/sub-paso
+                int microSteps = (int)ClampD(std::ceil(h / (period / ORBIT_STEPS_PER_REV)), 1.0, (double)MAX_MICROSTEPS);
+                double mh = h / (double)microSteps;
+
+                // La perturbacion de otros cuerpos masivos se evalua UNA
+                // sola vez por sub-paso 'h' (no en cada microstep): esos
+                // cuerpos apenas se mueven en el lapso de un 'h' (segundos a
+                // minutos), mientras que la orbita del anillo SI necesita
+                // resolucion fina -- el mismo principio que separa la parte
+                // "rapida" (host) de la "lenta" (perturbadores) en
+                // cualquier integrador de perturbaciones real, y evita
+                // recorrer 'sources' por cada microstep (costo
+                // microSteps*sourceCount innecesario).
+                Vector3D accPerturb{0, 0, 0};
+                for (int k = 0; k < sourceCount; ++k) {
+                    const Body* src = sources[k];
+                    if (src == host) continue;
+
+                    Vector3D toSrc = src->pos - d.pos;
+                    double sd2 = toSrc.lengthSqr() + SOFTENING * SOFTENING;
+                    double sd  = std::sqrt(sd2);
+                    accPerturb += toSrc * (G * src->mass / (sd2 * sd));
+                }
+
+                bool collided = false;
+                for (int s = 0; s < microSteps && !collided; ++s) {
+                    Vector3D rel = d.pos - host->pos;
+                    double r2 = rel.lengthSqr() + SOFTENING * SOFTENING;
+                    double r  = std::sqrt(r2);
+
+                    Vector3D acc = rel * (-G * host->mass / (r2 * r)) + accPerturb;
+
+                    d.vel += acc * mh;
+                    d.pos += d.vel * mh;
+
+                    if ((d.pos - host->pos).length() <= host->radius * 1.05) collided = true;
+                }
+
+                if (collided) {
                     d.active = false;
                     return;
                 }
-
-                Vector3D axis = DustHostSpinAxis(*host);
-
-                Vector3D rv = d.vel - host->vel;
-                double sign = (Cross(rel, rv).dot(axis) < 0.0) ? -1.0 : 1.0;
-
-                double omega = std::sqrt(G * host->mass / std::max(1.0, r * r * r));
-                Vector3D newRel = RotateAroundAxis(rel, axis, sign * omega * h);
-
-                Vector3D radial = NormalizeSafe(newRel);
-                Vector3D tangent = NormalizeSafe(Cross(axis, radial)) * sign;
-
-                double vCirc = std::sqrt(G * host->mass / r);
-
-                d.pos = host->pos + newRel;
-                d.vel = host->vel + tangent * vCirc;
 
                 d.currentRotation = std::fmod(
                     d.currentRotation + d.rotationSpeed * (float)h,
@@ -1914,40 +2326,70 @@ static void UpdateDustGravity(std::vector<DustParticle>& dust,
 
                 return;
             }
+
+            // Host no encontrado (destruido/fusionado): se desliga para que
+            // UpdateDustIntelligence la reclasifique con normalidad, y cae
+            // de inmediato a la gravedad N-body normal de mas abajo en
+            // este mismo sub-paso.
+            d.isRing = false;
+            d.state  = DustState::Decaying;
+            d.stableOrbitTime = 0.0;
         }
 
         // Restricted N-Body: la particula SIENTE la gravedad de los cuerpos
         // rigidos (sources), pero no suma gravedad entre particulas ni
         // afecta a 'bodies' -- a = sum(G*M_body/|r|^2 * r_hat).
-        Vector3D acc{0, 0, 0};
-        for (int k = 0; k < sourceCount; ++k) {
-            const Body& b = *sources[k];
-            Vector3D delta = b.pos - d.pos;
-            double dist2 = delta.lengthSqr() + SOFTENING*SOFTENING;
-            double dist  = std::sqrt(dist2);
-            acc += delta * (G * b.mass / (dist2 * dist));
-        }
-        d.vel += acc * h;
-        d.pos += d.vel * h;
+        //
+        // 'h' aqui es el dt COMPLETO del frame (ver StepPhysics: esta
+        // funcion ya no se llama una vez por sub-paso de cuerpo rigido,
+        // sino una sola vez por frame -- el polvo es un sistema visual
+        // ligero, no necesita la misma resolucion temporal fina que la
+        // integracion N-body precisa de 'bodies'). Sin micro-pasos
+        // propios, un 'h' grande (velocidades de simulacion altas) haria
+        // que la trayectoria/colision de escombros sueltos se volviera
+        // imprecisa de golpe -- en vez de eso, se subdivide en
+        // FREE_DUST_MICROSTEPS pasos fijos, igual de baratos sin importar
+        // la velocidad de simulacion elegida (a diferencia del polvo de
+        // anillo, que ya se auto-resuelve por periodo orbital mas arriba).
+        constexpr int FREE_DUST_MICROSTEPS = 8;
+        double mh = h / (double)FREE_DUST_MICROSTEPS;
+        bool diedThisCall = false;
 
-        // Rotacion propia ("tumbling"), puramente visual -- ver
-        // DustParticle::rotationAxis/rotationSpeed/currentRotation (body.h)
-        // y su uso en DrawDustField3D (renderer.h).
-        d.currentRotation = std::fmod(d.currentRotation + d.rotationSpeed * (float)h,
-                                       2.0f * (float)PI_D);
-
-        // Colision UNIDIRECCIONAL particula -> cuerpo (Bounding Spheres):
-        // si distance(d.pos, b.pos) <= b.radius, la particula se desactiva
-        // de inmediato para que el Particle Pool la reutilice. b.radius es
-        // SIEMPRE el radio solido base del cuerpo (nunca la atmosfera, ver
-        // hitboxes de ResolveCollisions). Las particulas NO comprueban
-        // colisiones entre si.
-        for (int k = 0; k < sourceCount; ++k) {
-            const Body& b = *sources[k];
-            if ((d.pos - b.pos).length() <= b.radius) {
-                d.active = false;
-                break;
+        for (int s = 0; s < FREE_DUST_MICROSTEPS && !diedThisCall; ++s) {
+            Vector3D acc{0, 0, 0};
+            for (int k = 0; k < sourceCount; ++k) {
+                const Body& b = *sources[k];
+                Vector3D delta = b.pos - d.pos;
+                double dist2 = delta.lengthSqr() + SOFTENING*SOFTENING;
+                double dist  = std::sqrt(dist2);
+                acc += delta * (G * b.mass / (dist2 * dist));
             }
+            d.vel += acc * mh;
+            d.pos += d.vel * mh;
+
+            // Colision UNIDIRECCIONAL particula -> cuerpo (Bounding
+            // Spheres): si distance(d.pos, b.pos) <= b.radius, la
+            // particula se desactiva de inmediato para que el Particle
+            // Pool la reutilice. b.radius es SIEMPRE el radio solido base
+            // del cuerpo (nunca la atmosfera, ver hitboxes de
+            // ResolveCollisions). Las particulas NO comprueban colisiones
+            // entre si.
+            for (int k = 0; k < sourceCount; ++k) {
+                const Body& b = *sources[k];
+                if ((d.pos - b.pos).length() <= b.radius) {
+                    d.active = false;
+                    diedThisCall = true;
+                    break;
+                }
+            }
+        }
+
+        if (!diedThisCall) {
+            // Rotacion propia ("tumbling"), puramente visual -- ver
+            // DustParticle::rotationAxis/rotationSpeed/currentRotation
+            // (body.h) y su uso en DrawDustField3D (renderer.h).
+            d.currentRotation = std::fmod(d.currentRotation + d.rotationSpeed * (float)h,
+                                           2.0f * (float)PI_D);
         }
     });
 }
@@ -1957,7 +2399,9 @@ static void UpdateDustGravity(std::vector<DustParticle>& dust,
 // completo (la gravedad se integra aparte, en sub-pasos).
 static void UpdateDustLifecycle(std::vector<DustParticle>& dust, double dt)
 {
-    for (DustParticle& d : dust) {
+    int dustRange = std::min((int)dust.size(), g_dustHighWaterMark);
+    for (int di = 0; di < dustRange; ++di) {
+        DustParticle& d = dust[di];
         if (!d.active) continue;
 
         d.fragAge += dt;
@@ -2248,8 +2692,22 @@ static void StepPhysics(std::vector<Body>& bodies, std::vector<DustParticle>& du
         for (Body& b : bodies) b.prevPos = b.pos;
         LeapfrogStep(bodies, h);
         ResolveCollisions(bodies, dust, h);
-        UpdateDustGravity(dust, bodies, h);
     }
+
+    // El polvo se actualiza UNA SOLA VEZ por frame con el dt completo (no
+    // una vez por sub-paso de cuerpo rigido, ver comentario en
+    // UpdateDustGravity mas arriba): a velocidad alta 'substeps' puede
+    // llegar a 64 (PHYS_MAX_SUBSTEPS_PER_FRAME), y repetir el barrido del
+    // pool de polvo esas 64 veces por frame -- incluso ya acotado a
+    // g_dustHighWaterMark -- multiplicaba el costo de cualquier anillo o
+    // cinturon de escombros activo (p.ej. los ~60000 particulas del
+    // anillo de Saturno) sin necesidad: el polvo no necesita la misma
+    // resolucion temporal fina que la integracion N-body precisa de
+    // 'bodies'. UpdateDustGravity ya se auto-resuelve por dentro (anillos:
+    // micro-pasos segun periodo orbital; polvo libre: FREE_DUST_MICROSTEPS
+    // fijos), asi que sigue siendo preciso con un 'h' grande.
+    UpdateDustGravity(dust, bodies, dt);
+
     ApplyTidesAndRoche(bodies, dust, dt);
     ResolveCollisions(bodies, dust, dt);
 

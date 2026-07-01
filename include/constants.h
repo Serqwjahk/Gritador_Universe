@@ -50,6 +50,15 @@ static constexpr int    PHYS_MAX_SUBSTEPS_PER_FRAME = 64;   // techo de costo po
 // TRAIL_TIME_SPAN mas abajo).
 extern double g_simTime;
 
+// Reloj de llamaradas (DrawStarFlares, renderer.h): antes usaban GetTime()
+// (tiempo REAL), ajeno a TIME_STEP -- por eso ignoraban la velocidad de
+// simulacion, mas notorio en gigantes/enanas blancas vistas a camara lenta.
+// Avanza con GetFrameTime() escalado por TIME_STEP/1200.0: a velocidad 1x
+// (TIME_STEP=1200) es identico al GetTime() anterior; a otras velocidades
+// escala proporcionalmente, y se congela en pausa (solo se incrementa en el
+// bloque "if (!input.paused)" de main.cpp, junto a g_simTime).
+extern double g_flareClock;
+
 // Trayectorias (trails): antes la longitud maxima se media en PUNTOS
 // (TRAIL_MAX_BASE/sqrt(TIME_STEP/1200), entre 60 y 300) y se quitaba
 // exactamente 1 punto por FRAME cuando se excedia -- el tiempo REAL (en
@@ -93,7 +102,13 @@ static constexpr int    MAX_LIGHTS    = 8;
 // body.h): al ser mucho mas barato por particula que un Body completo
 // (gravedad restringida + un solo draw call instanciado), soporta un
 // limite masivo sin caer de 60 FPS.
-static constexpr int    MAX_DUST_PARTICLES = 100000;
+// 200000 (antes 100000): la plantilla de Sistema Solar Realista
+// (solar_system_template.h) sola ya reparte ~91200 particulas solo en
+// anillos reales (Saturno/Jupiter/Urano/Neptuno/Quaoar/Haumea) + ~34000
+// en los tres cinturones de escombros (principal/Kuiper/Oort, ver
+// BELTS.json) -- con el limite anterior casi no quedaba presupuesto para
+// escombros de colisiones durante el juego normal.
+static constexpr int    MAX_DUST_PARTICLES = 200000;
 // Vida util del polvo antes de desvanecerse por completo (segundos).
 // Una nube de eyeccion debe disiparse en una escala "jugable" (segundos
 // reales a velocidad normal), no en meses simulados. Ligeramente mas
@@ -188,3 +203,20 @@ static constexpr double R_JUPITER = 6.9911e7; // m
 // (~13 M_Jup) que marca la transicion a enana marron.
 static constexpr double GASGIANT_RANDOM_MASS_MIN = 0.5 * 1.024e26;
 static constexpr double GASGIANT_RANDOM_MASS_MAX = 5.0 * M_JUPITER;
+
+// Unidad Astronomica (igual que astropy/JPL) -- nombre distinto de 'AU_M'
+// (solar_system_template.h) a proposito: ambos headers se incluyen juntos
+// en main.cpp, asi que dos constantes IGUALES con el MISMO nombre en
+// archivos distintos chocarian en tiempo de compilacion (redefinicion).
+static constexpr double AU_IN_M = 149597870700.0;
+
+// Vía Lactea: unidades de referencia "galacticas" para las unidades
+// automaticas del inspector de propiedades (gui.h). Son ordenes de
+// magnitud ampliamente citados, NO mediciones precisas -- la masa real
+// (dominada por materia oscura) tiene un rango de incertidumbre grande
+// (~0.7-2x10^12 M_sol segun el metodo de medicion), y el "radio" de una
+// galaxia no tiene un borde definido. Solo sirven como ancla de escala
+// para que un cuerpo hipoteticamente mas masivo/grande que una estrella
+// tenga una unidad razonable en la que mostrarse.
+static constexpr double M_MILKYWAY = 1.5e12 * M_SUN; // masa total estimada (incl. materia oscura)
+static constexpr double R_MILKYWAY = 4.73035e20;     // ~50,000 anios luz (radio del disco visible)
