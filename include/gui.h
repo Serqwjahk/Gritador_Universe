@@ -12,6 +12,7 @@
 #include "body.h"
 #include "stellar_evolution.h"
 #include "camera_input.h"
+#include "preview_renderer.h"
 
 // ============================================================
 //  GUI estilo "Universe Sandbox" (Dear ImGui + rlImGui)
@@ -125,19 +126,22 @@ static constexpr ImGuiWindowFlags HUD_FLAGS =
 // Misma escala que ui.h: TIME_STEP=1200.0 (1 dia/seg de sim) equivale a "x1".
 inline const char* TimeScaleLabel() {
     double rt = TIME_STEP / 1200.0;
-    return rt>=2048?"x2048":rt>=1024?"x1024":rt>=512?"x512":rt>=256?"x256":
+    return rt>=32768?"x32768":rt>=16384?"x16384":rt>=8192?"x8192":rt>=4096?"x4096":
+           rt>=2048?"x2048":rt>=1024?"x1024":rt>=512?"x512":rt>=256?"x256":
            rt>=128?"x128":rt>=64?"x64":rt>=32?"x32":rt>=16?"x16":rt>=8?"x8":
            rt>=4?"x4":rt>=2?"x2":rt>=1?"x1":rt>=0.5?"x1/2":rt>=0.25?"x1/4":
            rt>=0.125?"x1/8":rt>=0.0625?"x1/16":rt>=0.03125?"x1/32":
            rt>=0.015625?"x1/64":rt>=0.0078125?"x1/128":rt>=0.00390625?"x1/256":
-           rt>=0.001953125?"x1/512":"x1/1024";
+           rt>=0.001953125?"x1/512":rt>=0.000976563?"x1/1024":
+           rt>=0.000488281?"x1/2048":rt>=0.000244141?"x1/4096":
+           rt>=0.000122070?"x1/8192":"x1/16384";
 }
 
 // ── HUD de controles de tiempo (esquina inferior izquierda) ─
 inline void DrawTimeControlsHUD(GuiState& gui, bool& paused) {
     (void)gui;
     const float pad = 12.0f;
-    ImVec2 winSize(280.0f, 56.0f);
+    ImVec2 winSize(296.0f, 56.0f);
     ImGui::SetNextWindowPos(ImVec2(pad, (float)GetScreenHeight() - winSize.y - pad));
     ImGui::SetNextWindowSize(winSize);
     ImGui::Begin("##TimeControlsHUD", nullptr, HUD_FLAGS);
@@ -147,14 +151,14 @@ inline void DrawTimeControlsHUD(GuiState& gui, bool& paused) {
 
     ImGui::SameLine();
     if (ImGui::Button("<<", ImVec2(36, 32)))
-        TIME_STEP = std::max(TIME_STEP * 0.5, 1200.0 / 1024.0);
+        TIME_STEP = std::max(TIME_STEP * 0.5, 1200.0 / 16384.0);
 
     ImGui::SameLine();
     if (ImGui::Button(">>", ImVec2(36, 32)))
-        TIME_STEP = std::min(TIME_STEP * 2.0, 1200.0 * 2048.0);
+        TIME_STEP = std::min(TIME_STEP * 2.0, 1200.0 * 32768.0);
 
     ImGui::SameLine();
-    if (ImGui::Button(TimeScaleLabel(), ImVec2(70, 32)))
+    if (ImGui::Button(TimeScaleLabel(), ImVec2(86, 32)))
         TIME_STEP = 1200.0;
 
     ImGui::End();
@@ -220,11 +224,12 @@ inline void DrawCatalogMenu(GuiState& gui, InputState& input,
     if (!gui.showCatalogMenu) return;
 
     const float pad     = 12.0f;
-    const float winH    = 280.0f;
-    const float winW    = std::min(920.0f, (float)GetScreenWidth() - 2.0f * pad);
+    const float winW    = (float)GetScreenWidth() - 2.0f * pad;
+    // Altura adaptada a las celdas mas grandes (110px): 3 filas + pestanas/separadores
+    const float winH    = std::min(420.0f, (float)GetScreenHeight() * 0.44f);
     const float bottomY = (float)GetScreenHeight() - 56.0f - 2.0f * pad - winH;
 
-    ImGui::SetNextWindowPos(ImVec2(((float)GetScreenWidth() - winW) * 0.5f, bottomY));
+    ImGui::SetNextWindowPos(ImVec2(pad, bottomY));
     ImGui::SetNextWindowSize(ImVec2(winW, winH));
     ImGui::Begin("Catalogo de Objetos", &gui.showCatalogMenu,
                   ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
@@ -245,7 +250,7 @@ inline void DrawCatalogMenu(GuiState& gui, InputState& input,
     // ── Grid central de objetos del catalogo ──
     ImGui::BeginChild("##CatalogGrid", ImVec2(-rightW, 0), false);
     {
-        const float cellSize = 84.0f;
+        const float cellSize = 110.0f;
         ImGuiStyle& style = ImGui::GetStyle();
         float windowVisibleX2 = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
 
@@ -268,8 +273,28 @@ inline void DrawCatalogMenu(GuiState& gui, InputState& input,
                                 : IM_COL32(28, 28, 38, 160);
             dl->AddRectFilled(rmin, rmax, bg, 4.0f);
 
-            ImVec2 center((rmin.x + rmax.x) * 0.5f, rmin.y + (cellSize - 22.0f) * 0.5f);
-            dl->AddCircleFilled(center, 16.0f, IM_COL32(item.color.r, item.color.g, item.color.b, 255));
+            // Miniatura 3D cacheada: reemplaza la bolita de color
+            {
+                unsigned int tid = GetCatalogCache().GetTextureId((int)i);
+                if (tid) {
+                    // Área disponible para el icono: toda la celda menos el label (22px)
+                    float iconAreaH = cellSize - 22.0f;
+                    // Cuadrado que ocupa el área del icono con un margen de 2px
+                    float thumbSize = iconAreaH - 4.0f;
+                    float thumbX = (rmin.x + rmax.x) * 0.5f - thumbSize * 0.5f;
+                    float thumbY = rmin.y + 2.0f;
+                    // UV invertida verticalmente (quirk de raylib render textures)
+                    dl->AddImage((ImTextureID)(uintptr_t)tid,
+                                 ImVec2(thumbX, thumbY),
+                                 ImVec2(thumbX + thumbSize, thumbY + thumbSize),
+                                 ImVec2(0, 1), ImVec2(1, 0));
+                } else {
+                    // Fallback mientras no hay miniatura lista
+                    ImVec2 center((rmin.x + rmax.x) * 0.5f, rmin.y + (cellSize - 22.0f) * 0.5f);
+                    dl->AddCircleFilled(center, 16.0f,
+                                        IM_COL32(item.color.r, item.color.g, item.color.b, 255));
+                }
+            }
 
             ImVec2 textSize = ImGui::CalcTextSize(item.name.c_str());
             float tx = (rmin.x + rmax.x) * 0.5f - textSize.x * 0.5f;
@@ -443,7 +468,7 @@ inline int AutoRadiusUnit(double radiusM) {
 inline void DrawObjectInspector(GuiState& gui, Body& b,
                                  const std::vector<Body>& bodies)
 {
-    const float winW = 300.0f;
+    const float winW = 350.0f;
     const float pad  = 12.0f;
     ImGui::SetNextWindowPos(ImVec2((float)GetScreenWidth() - winW - pad, pad), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(winW, (float)GetScreenHeight() - 2.0f * pad), ImGuiCond_Always);
@@ -462,15 +487,12 @@ inline void DrawObjectInspector(GuiState& gui, Body& b,
         gui.lastSelectedId  = b.id;
     }
 
-    // ── Cabecera: icono de color + nombre editable ──
+    // ── Cabecera: preview isometrico 3D + nombre editable ──
     {
-        ImDrawList* dl     = ImGui::GetWindowDrawList();
-        ImVec2 cursor      = ImGui::GetCursorScreenPos();
-        const float iconR  = 14.0f;
-        dl->AddCircleFilled(ImVec2(cursor.x + iconR, cursor.y + iconR), iconR,
-                             IM_COL32(b.color.r, b.color.g, b.color.b, 255));
-        ImGui::Dummy(ImVec2(iconR * 2.0f + 8.0f, iconR * 2.0f));
-        ImGui::SameLine();
+        float pw = ImGui::GetContentRegionAvail().x;
+        // Altura proporcional al ancho del panel (relacion 200:256 del RT)
+        float ph = pw * (240.0f / 320.0f);  // relacion 4:3 del RT 320×240
+        GetPreviewRenderer().ShowInspector(pw, ph);
         ImGui::SetNextItemWidth(-1);
         if (ImGui::InputText("##name", gui.nameBuf, sizeof(gui.nameBuf)))
             b.name = gui.nameBuf;
@@ -478,8 +500,50 @@ inline void DrawObjectInspector(GuiState& gui, Body& b,
 
     ImGui::Separator();
 
-    // ── Vision General ──
-    if (ImGui::CollapsingHeader("Vision General", ImGuiTreeNodeFlags_DefaultOpen)) {
+    // Flags pre-calculados para tabs condicionales (declarados aqui para
+    // que esten disponibles en toda la estructura del TabBar de abajo)
+    bool hasAtmo      = b.atmosphereDensity > 0.001f;
+    bool hasClouds    = (b.isRockyPlanet && b.rockyPlanet.cloudDensity > 0.001f) || b.cloudTex != nullptr;
+    bool hasSolidComp = !b.solid_composition.empty();
+    bool hasAtmoComp  = !b.atmospheric_composition.empty();
+    bool hasHydro     = b.isRockyPlanet && b.volatileBudget > 0.0f;
+
+    if (ImGui::BeginTabBar("##inspTabs", ImGuiTabBarFlags_FittingPolicyScroll)) {
+
+    // ── General ──────────────────────────────────────────────────────────
+    if (ImGui::BeginTabItem("General")) {
+        // ── Edad del objeto (global, aplica a todo) ──
+        {
+            // Para estrellas y remanentes compactos se usa stellarAge (edad cosmica,
+            // inicializada en catalog.h a partir de la masa).
+            // Para planetas/rocas/etc. se usa bodyAge, que en catalog.h se inicializara
+            // con la edad real del objeto (datos por sesion); si bodyAge == 0 el objeto
+            // acaba de nacer en la simulacion (colision, eyeccion, spawn manual).
+            bool useStellarAge = b.isStar || b.isSupernovaRemnant
+                || b.stellarPhase == StellarPhase::NEUTRON_STAR
+                || b.stellarPhase == StellarPhase::BLACK_HOLE
+                || b.stellarPhase == StellarPhase::PULSAR
+                || b.stellarPhase == StellarPhase::MAGNETAR;
+            double ageS = useStellarAge ? b.stellarAge : b.bodyAge;
+
+            auto FormatAge = [](char* buf, int sz, double s) {
+                double yr = s / 3.15576e7;
+                if      (s   < 60.0)    snprintf(buf, sz, "%.1f s",   s);
+                else if (s   < 3600.0)  snprintf(buf, sz, "%.1f min", s / 60.0);
+                else if (s   < 86400.0) snprintf(buf, sz, "%.1f h",   s / 3600.0);
+                else if (s   < 3.15576e7) snprintf(buf, sz, "%.1f dias", s / 86400.0);
+                else if (yr  < 1000.0)  snprintf(buf, sz, "%.2f anos", yr);
+                else if (yr  < 1.0e6)   snprintf(buf, sz, "%.3f Kyr",  yr / 1000.0);
+                else if (yr  < 1.0e9)   snprintf(buf, sz, "%.3f Myr",  yr / 1.0e6);
+                else                    snprintf(buf, sz, "%.3f Gyr",  yr / 1.0e9);
+            };
+
+            char ageBuf[64];
+            FormatAge(ageBuf, sizeof(ageBuf), ageS);
+            ImGui::Text("Edad: %s", ageBuf);
+        }
+        ImGui::Separator();
+
         const char* matStr = b.material == MAT_ICY      ? "Helado"
                             : b.material == MAT_GASEOUS  ? "Gaseoso"
                             : b.material == MAT_METALLIC ? "Metalico" : "Rocoso";
@@ -538,187 +602,181 @@ inline void DrawObjectInspector(GuiState& gui, Body& b,
                 StellarPhase::AGB,          StellarPhase::THERMAL_PULSES,
                 StellarPhase::PLANETARY_NEBULA,
                 StellarPhase::WHITE_DWARF,  StellarPhase::BLACK_DWARF,
-                // Ruta masiva
+                // Ruta masiva (SN se detona via boton; no es fase seleccionable)
                 StellarPhase::SUPERGIANT,
-                StellarPhase::SUPERNOVA,    StellarPhase::SUPERNOVA_REMNANT,
                 StellarPhase::NEUTRON_STAR,
                 StellarPhase::PULSAR,   StellarPhase::MAGNETAR,
                 StellarPhase::BLACK_HOLE,
             };
             int phaseIdx = std::clamp((int)b.stellarPhase, 0, 18);
-            ImGui::Text("Fase: %s", phaseNames[phaseIdx]);
+            // Durante la supernova (evento, no fase) mostrar el objeto compacto destino
+            auto currentPhaseName = [&]() -> const char* {
+                if (b.stellarPhase == StellarPhase::SUPERNOVA) {
+                    double mR = std::max(0.08, b.initialStellarMass / M_SUN);
+                    return (b.compactRemnantType == 2 || mR >= 20.0)
+                        ? "Agujero Negro (en formacion)" : "Pulsar (en formacion)";
+                }
+                return phaseNames[phaseIdx];
+            };
+            ImGui::Text("Fase: %s", currentPhaseName());
 
-            // Clase espectral aproximada
+            // Inspector estelar
             if (b.isStar) {
-                const char* specClass = "?";
-                double T = b.temperature;
-                if      (T < 3700)  specClass = "M";
-                else if (T < 5200)  specClass = "K";
-                else if (T < 6000)  specClass = "G";
-                else if (T < 7500)  specClass = "F";
-                else if (T < 10000) specClass = "A";
-                else if (T < 30000) specClass = "B";
-                else                specClass = "O";
-                double mR = std::max(0.08, b.initialStellarMass / M_SUN);
+                bool isCompactRemnant = (b.stellarPhase == StellarPhase::NEUTRON_STAR
+                    || b.stellarPhase == StellarPhase::PULSAR
+                    || b.stellarPhase == StellarPhase::MAGNETAR
+                    || b.stellarPhase == StellarPhase::BLACK_HOLE);
+
+                double mR  = std::max(0.08, b.initialStellarMass / M_SUN);
                 double tMS = 1.0e10 * 3.156e7 * std::pow(mR, -2.5);
-                ImGui::Text("Clase: %s  |  Vida MS: %.1f Gyr", specClass, tMS / 3.156e16);
-                ImGui::Separator();
 
-                // Edad absoluta (stellarAge) al inicio de cada fase
-                auto phaseEntryAge = [tMS](StellarPhase p) -> double {
-                    switch (p) {
-                    case StellarPhase::PROTOSTAR:          return 0.0;
-                    case StellarPhase::MAIN_SEQUENCE:      return tMS * 0.005;
-                    case StellarPhase::SUBGIANT:           return tMS * 0.90;
-                    case StellarPhase::RED_GIANT:
-                    case StellarPhase::SUPERGIANT:         return tMS * 0.95;
-                    case StellarPhase::HELIUM_FLASH:       return tMS * 1.10;
-                    case StellarPhase::HORIZONTAL_BRANCH:  return tMS * 1.101;
-                    case StellarPhase::AGB:                return tMS * 1.111;
-                    case StellarPhase::THERMAL_PULSES:     return tMS * 1.151;
-                    case StellarPhase::PLANETARY_NEBULA:   return tMS * 1.171;
-                    case StellarPhase::SUPERNOVA:          return tMS * 1.00;
-                    case StellarPhase::WHITE_DWARF:        return tMS * 1.191;
-                    case StellarPhase::BLACK_DWARF:        return tMS * 2.5;
-                    case StellarPhase::SUPERNOVA_REMNANT:  return tMS * 1.05;
-                    case StellarPhase::NEUTRON_STAR:
-                    case StellarPhase::PULSAR:
-                    case StellarPhase::MAGNETAR:
-                    case StellarPhase::BLACK_HOLE:         return tMS * 1.06;
-                    case StellarPhase::BLUE_DWARF:         return tMS * 1.0;
-                    default: return 0.0;
-                    }
-                };
-                // Edad representativa para saltar a una fase via ComboBox
-                auto phaseRepAge = [tMS](StellarPhase p) -> double {
-                    switch (p) {
-                    case StellarPhase::PROTOSTAR:          return tMS * 0.002;
-                    case StellarPhase::MAIN_SEQUENCE:      return tMS * 0.45;
-                    case StellarPhase::SUBGIANT:           return tMS * 0.925;
-                    case StellarPhase::RED_GIANT:          return tMS * 1.025;
-                    case StellarPhase::SUPERGIANT:         return tMS * 0.975;
-                    case StellarPhase::HELIUM_FLASH:       return tMS * 1.100;
-                    case StellarPhase::HORIZONTAL_BRANCH:  return tMS * 1.106;
-                    case StellarPhase::AGB:                return tMS * 1.131;
-                    case StellarPhase::THERMAL_PULSES:     return tMS * 1.161;
-                    case StellarPhase::PLANETARY_NEBULA:   return tMS * 1.180;
-                    case StellarPhase::SUPERNOVA:          return tMS * 1.005;
-                    case StellarPhase::WHITE_DWARF:        return tMS * 1.200;
-                    case StellarPhase::BLACK_DWARF:        return tMS * 3.0;
-                    case StellarPhase::SUPERNOVA_REMNANT:  return tMS * 1.07;
-                    case StellarPhase::NEUTRON_STAR:
-                    case StellarPhase::PULSAR:
-                    case StellarPhase::MAGNETAR:
-                    case StellarPhase::BLACK_HOLE:         return tMS * 1.08;
-                    case StellarPhase::BLUE_DWARF:         return tMS * 1.02;
-                    default: return 0.0;
-                    }
-                };
+                if (!isCompactRemnant) {
+                    // Clase espectral aproximada (no aplica a remanentes compactos)
+                    const char* specClass = "?";
+                    double T = b.temperature;
+                    if      (T < 3700)  specClass = "M";
+                    else if (T < 5200)  specClass = "K";
+                    else if (T < 6000)  specClass = "G";
+                    else if (T < 7500)  specClass = "F";
+                    else if (T < 10000) specClass = "A";
+                    else if (T < 30000) specClass = "B";
+                    else                specClass = "O";
+                    ImGui::Text("Clase: %s  |  Vida MS: %.1f Gyr", specClass, tMS / 3.156e16);
+                    ImGui::Separator();
 
-                // Auto-evolución: ON por defecto. Editar edad/fase abajo NO
-                // la detiene -- son "saltos" puntuales, la simulacion sigue
-                // avanzando desde el nuevo punto. Solo esta casilla la
-                // congela de verdad (stellarManualOverride, ver
-                // UpdateStellarEvolution en stellar_evolution.h).
-                bool autoEvo = !b.stellarManualOverride;
-                if (ImGui::Checkbox("Auto-evolucion", &autoEvo))
-                    b.stellarManualOverride = !autoEvo;
-
-                double ageMyrs = b.stellarAge / 1.0e6;
-                double tMSmyrs = tMS / 1.0e6;
-                double maxAge  = tMSmyrs * 2.0;
-                ImGui::Text("Edad:");
-                ImGui::SetNextItemWidth(-1);
-                double minAge = 0.0;
-                if (ImGui::SliderScalar("##stellarAge", ImGuiDataType_Double,
-                                        &ageMyrs, &minAge, &maxAge, "%.1f Myr")) {
-                    b.stellarAge = ageMyrs * 1.0e6;
-                    double mRatio = std::max(0.08, b.initialStellarMass / M_SUN);
-                    StellarPhase prevPhase = b.stellarPhase;
-                    StellarPhase newPhase;
-                    if (b.stellarAge < tMS * 0.005)
-                        newPhase = StellarPhase::PROTOSTAR;
-                    else if (b.stellarAge < tMS * 0.90)
-                        newPhase = StellarPhase::MAIN_SEQUENCE;
-                    else if (b.stellarAge < tMS * 0.95)
-                        newPhase = StellarPhase::SUBGIANT;
-                    else if (mRatio >= b.effectiveSNThreshold) {
-                        if      (b.stellarAge < tMS * 1.00) newPhase = StellarPhase::SUPERGIANT;
-                        else if (b.stellarAge < tMS * 1.05) newPhase = StellarPhase::SUPERNOVA;
-                        else                                 newPhase = StellarPhase::SUPERNOVA_REMNANT;
-                    } else {
-                        if      (b.stellarAge < tMS * 1.10)  newPhase = StellarPhase::RED_GIANT;
-                        else if (b.stellarAge < tMS * 1.101) newPhase = StellarPhase::HELIUM_FLASH;
-                        else if (b.stellarAge < tMS * 1.111) newPhase = StellarPhase::HORIZONTAL_BRANCH;
-                        else if (b.stellarAge < tMS * 1.151) newPhase = StellarPhase::AGB;
-                        else if (b.stellarAge < tMS * 1.171) newPhase = StellarPhase::THERMAL_PULSES;
-                        else if (b.stellarAge < tMS * 1.191) newPhase = StellarPhase::PLANETARY_NEBULA;
-                        else                                  newPhase = StellarPhase::WHITE_DWARF;
-                    }
-                    b.stellarPhase    = newPhase;
-                    b.stellarPhaseAge = std::max(0.0, b.stellarAge - phaseEntryAge(newPhase));
-                    if (newPhase == StellarPhase::SUPERNOVA && prevPhase != StellarPhase::SUPERNOVA) {
-                        b.supernovaProgress = 0.0;
-                        b.supernovaRadius   = 0.0;
-                    }
-                    // NO snap aqui: solo cambiamos el ESTADO (fase/edad). El
-                    // radio/luminosidad/temperatura convergen GRADUALMENTE hacia el
-                    // target de la nueva fase via el lerp exponencial que YA corre
-                    // cada frame sin condicion en UpdateStellarEvolution (linea con
-                    // ApplyStellarPhaseProperties(b, dt) ANTES del chequeo de
-                    // stellarManualOverride, ver stellar_evolution.h) -- llamar
-                    // ApplyStellarPhaseProperties(b) aqui con dt=-1 (snap) hacia el
-                    // resultado final de UNA vez, sin animacion ("POP").
-                }
-
-                // ComboBox de fase: todas las fases validas para la masa, incluye
-                // rejuvenecer (volver a una fase anterior) a proposito -- el
-                // jugador quiere poder retroceder manualmente en el ciclo de vida.
-                ImGui::Text("Fase manual:");
-                ImGui::SetNextItemWidth(-1);
-                if (ImGui::BeginCombo("##phaseCombo", phaseNames[phaseIdx])) {
-                    for (StellarPhase p : phaseDisplayOrder) {
-                        int i = (int)p;
-                        if (!IsStellarPhaseValid(b, p)) continue;
-                        bool sel = (phaseIdx == i);
-                        if (ImGui::Selectable(phaseNames[i], sel)) {
-                            double repAge        = phaseRepAge(p);
-                            b.stellarPhase       = p;
-                            b.stellarAge         = repAge;
-                            b.stellarPhaseAge    = std::max(0.0, repAge - phaseEntryAge(p));
-                            if (p == StellarPhase::SUPERNOVA) {
-                                b.supernovaProgress = 0.0;
-                                b.supernovaRadius   = 0.0;
-                            }
-                            // NO snap: ver comentario sobre el slider de edad arriba.
+                    // Edad absoluta (stellarAge) al inicio de cada fase
+                    auto phaseEntryAge = [tMS](StellarPhase p) -> double {
+                        switch (p) {
+                        case StellarPhase::PROTOSTAR:          return 0.0;
+                        case StellarPhase::MAIN_SEQUENCE:      return tMS * 0.005;
+                        case StellarPhase::SUBGIANT:           return tMS * 0.90;
+                        case StellarPhase::RED_GIANT:
+                        case StellarPhase::SUPERGIANT:         return tMS * 0.95;
+                        case StellarPhase::HELIUM_FLASH:       return tMS * 1.10;
+                        case StellarPhase::HORIZONTAL_BRANCH:  return tMS * 1.101;
+                        case StellarPhase::AGB:                return tMS * 1.111;
+                        case StellarPhase::THERMAL_PULSES:     return tMS * 1.151;
+                        case StellarPhase::PLANETARY_NEBULA:   return tMS * 1.171;
+                        case StellarPhase::SUPERNOVA:          return tMS * 1.00;
+                        case StellarPhase::WHITE_DWARF:        return tMS * 1.191;
+                        case StellarPhase::BLACK_DWARF:        return tMS * 2.5;
+                        case StellarPhase::SUPERNOVA_REMNANT:  return tMS * 1.05;
+                        case StellarPhase::NEUTRON_STAR:
+                        case StellarPhase::PULSAR:
+                        case StellarPhase::MAGNETAR:
+                        case StellarPhase::BLACK_HOLE:         return tMS * 1.06;
+                        case StellarPhase::BLUE_DWARF:         return tMS * 1.0;
+                        default: return 0.0;
                         }
-                        if (sel) ImGui::SetItemDefaultFocus();
-                    }
-                    ImGui::EndCombo();
-                }
+                    };
+                    // Edad representativa para saltar a una fase via ComboBox
+                    auto phaseRepAge = [tMS](StellarPhase p) -> double {
+                        switch (p) {
+                        case StellarPhase::PROTOSTAR:          return tMS * 0.002;
+                        case StellarPhase::MAIN_SEQUENCE:      return tMS * 0.45;
+                        case StellarPhase::SUBGIANT:           return tMS * 0.925;
+                        case StellarPhase::RED_GIANT:          return tMS * 1.025;
+                        case StellarPhase::SUPERGIANT:         return tMS * 0.975;
+                        case StellarPhase::HELIUM_FLASH:       return tMS * 1.100;
+                        case StellarPhase::HORIZONTAL_BRANCH:  return tMS * 1.106;
+                        case StellarPhase::AGB:                return tMS * 1.131;
+                        case StellarPhase::THERMAL_PULSES:     return tMS * 1.161;
+                        case StellarPhase::PLANETARY_NEBULA:   return tMS * 1.180;
+                        case StellarPhase::SUPERNOVA:          return tMS * 1.005;
+                        case StellarPhase::WHITE_DWARF:        return tMS * 1.200;
+                        case StellarPhase::BLACK_DWARF:        return tMS * 3.0;
+                        case StellarPhase::SUPERNOVA_REMNANT:  return tMS * 1.07;
+                        case StellarPhase::NEUTRON_STAR:
+                        case StellarPhase::PULSAR:
+                        case StellarPhase::MAGNETAR:
+                        case StellarPhase::BLACK_HOLE:         return tMS * 1.08;
+                        case StellarPhase::BLUE_DWARF:         return tMS * 1.02;
+                        default: return 0.0;
+                        }
+                    };
 
-                // Botón detonar supernova: habilitado solo si la ruta de
-                // supernova es alcanzable (masa inicial O actual >= umbral).
-                bool canSupernova = IsStellarPhaseValid(b, StellarPhase::SUPERNOVA);
-                if (canSupernova) {
-                    if (ImGui::Button("Detonar Supernova", {-1, 0})) {
-                        b.stellarPhase        = StellarPhase::SUPERNOVA;
-                        b.stellarPhaseAge     = 0.0;
-                        b.supernovaProgress   = 0.0;
-                        b.supernovaRadius     = 0.0;
-                    }
-                } else {
-                    ImGui::BeginDisabled();
-                    ImGui::Button("Detonar Supernova (masa insuf.)", {-1, 0});
-                    ImGui::EndDisabled();
-                }
+                    // Auto-evolución: ON por defecto. Editar edad/fase abajo NO
+                    // la detiene -- son "saltos" puntuales, la simulacion sigue
+                    // avanzando desde el nuevo punto. Solo esta casilla la
+                    // congela de verdad (stellarManualOverride).
+                    bool autoEvo = !b.stellarManualOverride;
+                    if (ImGui::Checkbox("Auto-evolucion", &autoEvo))
+                        b.stellarManualOverride = !autoEvo;
 
+                    double ageMyrs = b.stellarAge / 1.0e6;
+                    double tMSmyrs = tMS / 1.0e6;
+                    double maxAge  = tMSmyrs * 2.0;
+                    ImGui::Text("Edad estelar:");
+                    ImGui::SetNextItemWidth(-1);
+                    double minAge = 0.0;
+                    if (ImGui::SliderScalar("##stellarAge", ImGuiDataType_Double,
+                                            &ageMyrs, &minAge, &maxAge, "%.1f Myr")) {
+                        b.stellarAge = ageMyrs * 1.0e6;
+                        double mRatio = std::max(0.08, b.initialStellarMass / M_SUN);
+                        StellarPhase newPhase;
+                        if (b.stellarAge < tMS * 0.005)
+                            newPhase = StellarPhase::PROTOSTAR;
+                        else if (b.stellarAge < tMS * 0.90)
+                            newPhase = StellarPhase::MAIN_SEQUENCE;
+                        else if (b.stellarAge < tMS * 0.95)
+                            newPhase = StellarPhase::SUBGIANT;
+                        else if (mRatio >= b.effectiveSNThreshold) {
+                            newPhase = StellarPhase::SUPERGIANT; // SN solo via boton
+                        } else {
+                            if      (b.stellarAge < tMS * 1.10)  newPhase = StellarPhase::RED_GIANT;
+                            else if (b.stellarAge < tMS * 1.101) newPhase = StellarPhase::HELIUM_FLASH;
+                            else if (b.stellarAge < tMS * 1.111) newPhase = StellarPhase::HORIZONTAL_BRANCH;
+                            else if (b.stellarAge < tMS * 1.151) newPhase = StellarPhase::AGB;
+                            else if (b.stellarAge < tMS * 1.171) newPhase = StellarPhase::THERMAL_PULSES;
+                            else if (b.stellarAge < tMS * 1.191) newPhase = StellarPhase::PLANETARY_NEBULA;
+                            else                                  newPhase = StellarPhase::WHITE_DWARF;
+                        }
+                        b.stellarPhase    = newPhase;
+                        b.stellarPhaseAge = std::max(0.0, b.stellarAge - phaseEntryAge(newPhase));
+                    }
+
+                    // ComboBox de fase
+                    ImGui::Text("Fase manual:");
+                    ImGui::SetNextItemWidth(-1);
+                    if (ImGui::BeginCombo("##phaseCombo", currentPhaseName())) {
+                        for (StellarPhase p : phaseDisplayOrder) {
+                            int i = (int)p;
+                            if (!IsStellarPhaseValid(b, p)) continue;
+                            bool sel = (phaseIdx == i);
+                            if (ImGui::Selectable(phaseNames[i], sel)) {
+                                double repAge     = phaseRepAge(p);
+                                b.stellarPhase    = p;
+                                b.stellarAge      = repAge;
+                                b.stellarPhaseAge = std::max(0.0, repAge - phaseEntryAge(p));
+                            }
+                            if (sel) ImGui::SetItemDefaultFocus();
+                        }
+                        ImGui::EndCombo();
+                    }
+
+                    // Boton detonar supernova
+                    bool canSupernova = IsStellarPhaseValid(b, StellarPhase::SUPERNOVA);
+                    if (canSupernova) {
+                        if (ImGui::Button("Detonar Supernova", {-1, 0})) {
+                            b.stellarPhase        = StellarPhase::SUPERNOVA;
+                            b.stellarPhaseAge     = 0.0;
+                            b.supernovaProgress   = 0.0;
+                            b.supernovaRadius     = 0.0;
+                        }
+                    } else {
+                        ImGui::BeginDisabled();
+                        ImGui::Button("Detonar Supernova (masa insuf.)", {-1, 0});
+                        ImGui::EndDisabled();
+                    }
+                } // end !isCompactRemnant
+
+                // Propiedades fisicas: visibles para todos los tipos de estrella
                 ImGui::Separator();
                 ImGui::Text("Temp: %.0f K  |  Lum: %.3f Lsol", b.temperature, b.luminosity / L_SUN);
                 ImGui::Text("Radio: %.3f Rsol  |  Masa: %.3f Msol",
                     b.radius / R_SUN, b.initialStellarMass / M_SUN);
                 if (b.pulsationAmplitude > 0.01f)
-                    ImGui::Text("Pulsacion: ±%.0f%%  |  Actividad: %.2f",
+                    ImGui::Text("Pulsacion: +-%.0f%%  |  Actividad: %.2f",
                         b.pulsationAmplitude * 100.0f, b.stellarActivity);
                 ImGui::Text("Metalicidad Z: %.4f  |  Rot.crit: %.2f",
                     b.metallicityZ, b.criticalRotationFraction);
@@ -729,10 +787,10 @@ inline void DrawObjectInspector(GuiState& gui, Body& b,
         } // end isStar / isSupernovaRemnant
         else if (b.accreteCount > 0)
             ImGui::Text("Acrecion: %d cuerpos", b.accreteCount);
-    }
 
-    // ── Propiedades / Fisicas ──
-    if (ImGui::CollapsingHeader("Propiedades / Fisicas", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Separator();
+
+        // ── Propiedades fisicas ──────────────────────────────────────────
         ImGui::SetNextItemWidth(-1);
         if (ImGui::BeginCombo("##massUnit", massUnitNames[gui.massUnit])) {
             for (int i = 0; i < MASS_UNIT_COUNT; ++i) {
@@ -742,7 +800,6 @@ inline void DrawObjectInspector(GuiState& gui, Body& b,
             }
             ImGui::EndCombo();
         }
-
         ImGui::Text("Masa (%s)", massUnitNames[gui.massUnit]);
         double massDisplay = b.mass / massUnitDiv[gui.massUnit];
         ImGui::SetNextItemWidth(-1);
@@ -761,7 +818,6 @@ inline void DrawObjectInspector(GuiState& gui, Body& b,
             }
             ImGui::EndCombo();
         }
-
         ImGui::Text("Radio (%s)", radiusUnitNames[gui.radiusUnit]);
         double radiusDisplay = b.radius / radiusUnitDiv[gui.radiusUnit];
         ImGui::SetNextItemWidth(-1);
@@ -770,63 +826,88 @@ inline void DrawObjectInspector(GuiState& gui, Body& b,
 
         double density = b.mass / ((4.0 / 3.0) * PI_D * std::pow(b.radius, 3));
         ImGui::Text("Densidad: %.0f kg/m3 (%.2f g/cm3)", density, density / 1000.0);
-    }
 
-    // ── Movimiento ──
-    if (ImGui::CollapsingHeader("Movimiento", ImGuiTreeNodeFlags_DefaultOpen)) {
+        // ── Campo Magnetico ──────────────────────────────────────────────
+        if (b.magneticFieldStrength > 0.0) {
+            ImGui::Separator();
+            double B = b.magneticFieldStrength;
+            char Bbuf[48];
+            if      (B < 1.0e-6)  snprintf(Bbuf, sizeof(Bbuf), "%.2f nT",  B * 1.0e9);
+            else if (B < 1.0e-3)  snprintf(Bbuf, sizeof(Bbuf), "%.2f µT",  B * 1.0e6);
+            else if (B < 1.0)     snprintf(Bbuf, sizeof(Bbuf), "%.3f mT",  B * 1.0e3);
+            else if (B < 1.0e3)   snprintf(Bbuf, sizeof(Bbuf), "%.3f T",   B);
+            else if (B < 1.0e6)   snprintf(Bbuf, sizeof(Bbuf), "%.2f kT",  B * 1.0e-3);
+            else if (B < 1.0e9)   snprintf(Bbuf, sizeof(Bbuf), "%.2f MT",  B * 1.0e-6);
+            else                  snprintf(Bbuf, sizeof(Bbuf), "%.2e T",   B);
+            ImGui::Text("Campo mag.: %s", Bbuf);
+            if (b.magneticAxisTilt > 0.5f)
+                ImGui::Text("Incl. eje mag.: %.1f deg", b.magneticAxisTilt);
+            else
+                ImGui::Text("Incl. eje mag.: ~0 (alineado)");
+        }
+
+        ImGui::EndTabItem();
+    } // end General tab
+
+    // ── Movimiento ────────────────────────────────────────────────────────
+    if (ImGui::BeginTabItem("Movimiento")) {
         ImGui::Text("Velocidad: %.2f km/s", b.vel.length() / 1000.0);
         ImGui::Text("Periodo orbital: %s", OrbitalPeriod(b, bodies).c_str());
         ImGui::Text("Periodo de rotacion: %s", RotationPeriod(b.spinRateDeg).c_str());
+        ImGui::EndTabItem();
     }
 
-    // ── Composicion: dos inventarios separados (ver body.h) -- manto/
-    //    nucleo SOLIDO vs. envoltura GASEOSA, cada uno suma ~1.0 por
-    //    separado (real para cuerpos del catalogo, interpolado entre
-    //    anclas reales para procedurales -- ver composition.h). Cada
-    //    apartado solo se muestra si el cuerpo REALMENTE tiene ese
-    //    inventario poblado -- una estrella o gigante gaseoso no tiene
-    //    corteza solida (b.solid_composition queda vacio a proposito,
-    //    ver catalog.h), y un cuerpo sin atmosfera (Mercurio, la Luna,
-    //    asteroides...) no tiene inventario atmosferico; antes ambos
-    //    apartados aparecian siempre, vacios ("Sin datos"), sin importar
-    //    si tenian sentido para ese cuerpo. ──
-    if (!b.solid_composition.empty() && ImGui::CollapsingHeader("Composicion Solida / Terrestre")) {
-        DrawCompositionList(b.solid_composition);
-    }
-    if (!b.atmospheric_composition.empty() && ImGui::CollapsingHeader("Composicion Atmosferica")) {
-        DrawCompositionList(b.atmospheric_composition);
-    }
-
-    if (b.isRockyPlanet && b.volatileBudget > 0.0f &&
-        ImGui::CollapsingHeader("Hidrosfera / Volatiles", ImGuiTreeNodeFlags_DefaultOpen)) {
-
-        float liquid = ClampF(
-            b.volatileBudget - b.iceFraction - b.vaporFraction,
-            0.0f,
-            b.volatileBudget
-        );
-
-        ImGui::Text("Volatiles totales: %.2f%%", b.volatileBudget * 100.0f);
-        ImGui::Text("Agua liquida:     %.2f%%", liquid * 100.0f);
-        ImGui::Text("Hielo:            %.2f%%", b.iceFraction * 100.0f);
-        ImGui::Text("Vapor:            %.2f%%", b.vaporFraction * 100.0f);
-        ImGui::Text("Nivel visual mar: %.2f%%", b.rockyPlanet.waterLevel * 100.0f);
-    }
-
-    // ── Visuales: toggles de atmosfera/nubes (ver hideAtmosphere/
-    //    hideClouds en body.h) -- solo afectan el dibujado. ──
-    bool hasAtmo   = b.atmosphereDensity > 0.001f;
-    bool hasClouds = (b.isRockyPlanet && b.rockyPlanet.cloudDensity > 0.001f) || b.cloudTex != nullptr;
-    if ((hasAtmo || hasClouds) && ImGui::CollapsingHeader("Visuales", ImGuiTreeNodeFlags_DefaultOpen)) {
-        if (hasAtmo) {
-            bool show = !b.hideAtmosphere;
-            if (ImGui::Checkbox("Mostrar atmosfera", &show)) b.hideAtmosphere = !show;
+    // ── Composicion ───────────────────────────────────────────────────────
+    if (ImGui::BeginTabItem("Composicion")) {
+        bool anyComp = hasSolidComp || hasAtmoComp || hasHydro;
+        if (!anyComp) {
+            ImGui::TextDisabled("Sin datos de composicion");
+        } else {
+            if (hasSolidComp) {
+                ImGui::TextDisabled("Corteza / Manto");
+                DrawCompositionList(b.solid_composition);
+            }
+            if (hasAtmoComp) {
+                if (hasSolidComp) ImGui::Separator();
+                ImGui::TextDisabled("Atmosfera");
+                DrawCompositionList(b.atmospheric_composition);
+            }
+            if (hasHydro) {
+                if (hasSolidComp || hasAtmoComp) ImGui::Separator();
+                ImGui::TextDisabled("Hidrosfera / Volatiles");
+                float liquid = ClampF(
+                    b.volatileBudget - b.iceFraction - b.vaporFraction,
+                    0.0f, b.volatileBudget
+                );
+                ImGui::Text("Volatiles totales: %.2f%%", b.volatileBudget * 100.0f);
+                ImGui::Text("Agua liquida:      %.2f%%", liquid * 100.0f);
+                ImGui::Text("Hielo:             %.2f%%", b.iceFraction * 100.0f);
+                ImGui::Text("Vapor:             %.2f%%", b.vaporFraction * 100.0f);
+                ImGui::Text("Nivel visual mar:  %.2f%%", b.rockyPlanet.waterLevel * 100.0f);
+            }
         }
-        if (hasClouds) {
-            bool show = !b.hideClouds;
-            if (ImGui::Checkbox("Mostrar nubes", &show)) b.hideClouds = !show;
-        }
+        ImGui::EndTabItem();
     }
+
+    // ── Visuales ──────────────────────────────────────────────────────────
+    if (ImGui::BeginTabItem("Visuales")) {
+        if (!hasAtmo && !hasClouds) {
+            ImGui::TextDisabled("Sin elementos visuales editables");
+        } else {
+            if (hasAtmo) {
+                bool show = !b.hideAtmosphere;
+                if (ImGui::Checkbox("Mostrar atmosfera", &show)) b.hideAtmosphere = !show;
+            }
+            if (hasClouds) {
+                bool show = !b.hideClouds;
+                if (ImGui::Checkbox("Mostrar nubes", &show)) b.hideClouds = !show;
+            }
+        }
+        ImGui::EndTabItem();
+    }
+
+    ImGui::EndTabBar();
+    } // end BeginTabBar
 
     ImGui::End();
 }

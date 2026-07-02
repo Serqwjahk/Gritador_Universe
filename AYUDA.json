@@ -1,0 +1,701 @@
+{
+  "metadata": {
+    "version": "solar_system_age_gravity_magnetic_corrected_2026-07-01",
+    "language": "es",
+    "purpose": "JSON complementario para simulador: edad, gravedad, GM, velocidad de escape, campo magnético, magneticAxisTilt y notas físicas importantes. No incluye composición química.",
+    "units": {
+      "age_gyr": "gigayears",
+      "surface_gravity_m_s2": "m/s^2",
+      "GM_km3_s2": "km^3/s^2",
+      "escape_velocity_km_s": "km/s",
+      "magneticAxisTilt_deg": "degrees"
+    },
+    "notes": {
+      "age_model": "La edad exacta individual no siempre está medida. Para la mayoría de cuerpos se usa formación temprana del Sistema Solar (~4.6 Ga). La edad de la superficie puede ser menor por impactos, volcanismo, criovulcanismo o renovación geológica.",
+      "gravity_model": "Todo cuerpo con masa tiene campo gravitacional. En gigantes gaseosos/helados la gravedad es una gravedad de referencia atmosférica, no de superficie sólida.",
+      "magneticAxisTilt_definition": "Ángulo aproximado entre el eje dipolar magnético y el eje de rotación del cuerpo. null significa no aplicable o desconocido, no cero.",
+      "data_quality": "high = medido/consolidado; medium = aceptado con incertidumbre; approx = aproximado; modeled = calculado/modelado; unknown = desconocido."
+    }
+  },
+  "celestial_bodies": {
+    "Sun": {
+      "name_es": "Sol",
+      "classification": "star_G2V",
+      "age_gyr": 4.57,
+      "age_quality": "high_approx",
+      "gravity_field": {
+        "gravity_applies": true,
+        "surface_gravity_m_s2": 274.0,
+        "surface_gravity_earth_g": 27.94,
+        "GM_km3_s2": 132712440000.0,
+        "escape_velocity_km_s": 617.5,
+        "quality": "high"
+      },
+      "magnetic_field": {
+        "has_global_magnetic_field": true,
+        "field_type": "stellar_dynamo_complex_variable",
+        "magneticAxisTilt_deg": null,
+        "magneticAxisTilt_quality": "not_simple_stable_dipole",
+        "environment": "heliosphere"
+      },
+      "important_related_info": [
+        "Fuente gravitacional dominante del sistema.",
+        "Fuente principal de radiación, viento solar y heliosfera.",
+        "Su campo magnético es variable y complejo; no conviene modelarlo como un dipolo fijo simple."
+      ]
+    },
+    "Mercury": {
+      "name_es": "Mercurio",
+      "classification": "planet_terrestrial",
+      "age_gyr": 4.56,
+      "age_quality": "approx",
+      "gravity_field": {
+        "gravity_applies": true,
+        "surface_gravity_m_s2": 3.7,
+        "surface_gravity_earth_g": 0.377,
+        "GM_km3_s2": 22031.9,
+        "escape_velocity_km_s": 4.25,
+        "quality": "high"
+      },
+      "magnetic_field": {
+        "has_global_magnetic_field": true,
+        "field_type": "weak_intrinsic_dynamo",
+        "magneticAxisTilt_deg": 14.0,
+        "magneticAxisTilt_quality": "approx",
+        "environment": "small_magnetosphere"
+      },
+      "important_related_info": [
+        "Campo magnético global débil.",
+        "Exosfera extremadamente tenue.",
+        "Muy afectado por el viento solar."
+      ]
+    },
+    "Venus": {
+      "name_es": "Venus",
+      "classification": "planet_terrestrial",
+      "age_gyr": 4.56,
+      "age_quality": "approx",
+      "gravity_field": {
+        "gravity_applies": true,
+        "surface_gravity_m_s2": 8.87,
+        "surface_gravity_earth_g": 0.905,
+        "GM_km3_s2": 324859.0,
+        "escape_velocity_km_s": 10.36,
+        "quality": "high"
+      },
+      "magnetic_field": {
+        "has_global_magnetic_field": false,
+        "field_type": "induced_by_solar_wind",
+        "magneticAxisTilt_deg": null,
+        "magneticAxisTilt_quality": "not_applicable",
+        "environment": "induced_magnetosphere"
+      },
+      "important_related_info": [
+        "No tiene campo magnético intrínseco global.",
+        "Rotación retrógrada extremadamente lenta.",
+        "Atmósfera muy densa."
+      ]
+    },
+    "Earth": {
+      "name_es": "Tierra",
+      "classification": "planet_terrestrial",
+      "age_gyr": 4.54,
+      "age_quality": "high_approx",
+      "gravity_field": {
+        "gravity_applies": true,
+        "surface_gravity_m_s2": 9.8,
+        "surface_gravity_earth_g": 1.0,
+        "GM_km3_s2": 398600.4,
+        "escape_velocity_km_s": 11.19,
+        "quality": "high"
+      },
+      "magnetic_field": {
+        "has_global_magnetic_field": true,
+        "field_type": "intrinsic_core_dynamo",
+        "magneticAxisTilt_deg": 10.8,
+        "magneticAxisTilt_quality": "approx",
+        "environment": "magnetosphere"
+      },
+      "important_related_info": [
+        "Campo magnético global activo.",
+        "Magnetosfera importante para simular interacción con viento solar.",
+        "Tiene atmósfera densa y océanos superficiales."
+      ]
+    },
+    "Moon": {
+      "name_es": "Luna",
+      "classification": "natural_satellite_of_Earth",
+      "age_gyr": 4.51,
+      "age_quality": "approx",
+      "gravity_field": {
+        "gravity_applies": true,
+        "surface_gravity_m_s2": 1.62,
+        "surface_gravity_earth_g": 0.165,
+        "GM_km3_s2": 4902.8,
+        "escape_velocity_km_s": 2.38,
+        "quality": "high"
+      },
+      "magnetic_field": {
+        "has_global_magnetic_field": false,
+        "field_type": "localized_crustal_remanent_fields",
+        "magneticAxisTilt_deg": null,
+        "magneticAxisTilt_quality": "not_applicable",
+        "environment": "no_global_magnetosphere"
+      },
+      "important_related_info": [
+        "Bloqueada por marea con la Tierra.",
+        "Tiene anomalías gravitacionales locales llamadas mascons.",
+        "Probablemente formada por impacto gigante temprano."
+      ]
+    },
+    "Mars": {
+      "name_es": "Marte",
+      "classification": "planet_terrestrial",
+      "age_gyr": 4.56,
+      "age_quality": "approx",
+      "gravity_field": {
+        "gravity_applies": true,
+        "surface_gravity_m_s2": 3.71,
+        "surface_gravity_earth_g": 0.378,
+        "GM_km3_s2": 42828.4,
+        "escape_velocity_km_s": 5.03,
+        "quality": "high"
+      },
+      "magnetic_field": {
+        "has_global_magnetic_field": false,
+        "field_type": "localized_crustal_remanent_fields",
+        "magneticAxisTilt_deg": null,
+        "magneticAxisTilt_quality": "not_applicable",
+        "environment": "induced_magnetosphere"
+      },
+      "important_related_info": [
+        "No tiene campo magnético global actual.",
+        "Tiene campos magnéticos corticales remanentes.",
+        "Atmósfera delgada y baja velocidad de escape."
+      ]
+    },
+    "Jupiter": {
+      "name_es": "Júpiter",
+      "classification": "planet_gas_giant",
+      "age_gyr": 4.59,
+      "age_quality": "approx",
+      "gravity_field": {
+        "gravity_applies": true,
+        "surface_gravity_m_s2": 24.79,
+        "surface_gravity_earth_g": 2.528,
+        "GM_km3_s2": 126686532.0,
+        "escape_velocity_km_s": 60.2,
+        "quality": "high",
+        "note": "Gravedad referida a nivel atmosférico; no superficie sólida."
+      },
+      "magnetic_field": {
+        "has_global_magnetic_field": true,
+        "field_type": "very_strong_intrinsic_dynamo",
+        "magneticAxisTilt_deg": 9.6,
+        "magneticAxisTilt_quality": "approx",
+        "environment": "huge_magnetosphere_and_radiation_belts"
+      },
+      "important_related_info": [
+        "Planeta dominante gravitacionalmente después del Sol.",
+        "Magnetosfera enorme y cinturones de radiación intensos.",
+        "Afecta fuertemente a Ío, Europa, Ganímedes y Calisto."
+      ]
+    },
+    "Saturn": {
+      "name_es": "Saturno",
+      "classification": "planet_gas_giant",
+      "age_gyr": 4.59,
+      "age_quality": "approx",
+      "gravity_field": {
+        "gravity_applies": true,
+        "surface_gravity_m_s2": 10.44,
+        "surface_gravity_earth_g": 1.065,
+        "GM_km3_s2": 37931208.0,
+        "escape_velocity_km_s": 36.09,
+        "quality": "high",
+        "note": "Gravedad referida a nivel atmosférico; no superficie sólida."
+      },
+      "magnetic_field": {
+        "has_global_magnetic_field": true,
+        "field_type": "intrinsic_dynamo_nearly_axisymmetric",
+        "magneticAxisTilt_deg": 0.06,
+        "magneticAxisTilt_quality": "approx",
+        "environment": "magnetosphere"
+      },
+      "important_related_info": [
+        "Campo magnético casi alineado con el eje de rotación.",
+        "Sistema de anillos principal.",
+        "Gravedad clave para la dinámica de anillos y lunas."
+      ]
+    },
+    "Uranus": {
+      "name_es": "Urano",
+      "classification": "planet_ice_giant",
+      "age_gyr": 4.59,
+      "age_quality": "approx",
+      "gravity_field": {
+        "gravity_applies": true,
+        "surface_gravity_m_s2": 8.87,
+        "surface_gravity_earth_g": 0.905,
+        "GM_km3_s2": 5794556.0,
+        "escape_velocity_km_s": 21.38,
+        "quality": "high"
+      },
+      "magnetic_field": {
+        "has_global_magnetic_field": true,
+        "field_type": "tilted_offset_intrinsic_dynamo",
+        "magneticAxisTilt_deg": 59.0,
+        "magneticAxisTilt_quality": "approx",
+        "environment": "highly_tilted_magnetosphere"
+      },
+      "important_related_info": [
+        "Inclinación axial extrema.",
+        "Campo magnético muy inclinado respecto al eje de rotación.",
+        "Magnetosfera compleja y variable."
+      ]
+    },
+    "Neptune": {
+      "name_es": "Neptuno",
+      "classification": "planet_ice_giant",
+      "age_gyr": 4.59,
+      "age_quality": "approx",
+      "gravity_field": {
+        "gravity_applies": true,
+        "surface_gravity_m_s2": 11.15,
+        "surface_gravity_earth_g": 1.137,
+        "GM_km3_s2": 6836529.0,
+        "escape_velocity_km_s": 23.56,
+        "quality": "high"
+      },
+      "magnetic_field": {
+        "has_global_magnetic_field": true,
+        "field_type": "tilted_offset_intrinsic_dynamo",
+        "magneticAxisTilt_deg": 47.0,
+        "magneticAxisTilt_quality": "approx",
+        "environment": "highly_tilted_magnetosphere"
+      },
+      "important_related_info": [
+        "Campo magnético muy inclinado.",
+        "Controla gravitacionalmente a Tritón.",
+        "Gigante helado con atmósfera dinámica."
+      ]
+    },
+    "Ceres": {
+      "name_es": "Ceres",
+      "classification": "dwarf_planet_asteroid_belt",
+      "age_gyr": 4.56,
+      "age_quality": "approx",
+      "gravity_field": {
+        "gravity_applies": true,
+        "surface_gravity_m_s2": 0.27,
+        "surface_gravity_earth_g": 0.0275,
+        "GM_km3_s2": 62.63,
+        "escape_velocity_km_s": 0.51,
+        "quality": "high"
+      },
+      "magnetic_field": {
+        "has_global_magnetic_field": false,
+        "field_type": "none_detected",
+        "magneticAxisTilt_deg": null,
+        "magneticAxisTilt_quality": "not_applicable",
+        "environment": "none_known"
+      },
+      "important_related_info": [
+        "Mayor cuerpo del cinturón principal de asteroides.",
+        "Gravedad baja pero suficiente para forma casi esférica.",
+        "Puede conservar hielo o salmueras internas."
+      ]
+    },
+    "Pluto": {
+      "name_es": "Plutón",
+      "classification": "dwarf_planet_plutoid",
+      "age_gyr": 4.5,
+      "age_quality": "approx",
+      "gravity_field": {
+        "gravity_applies": true,
+        "surface_gravity_m_s2": 0.62,
+        "surface_gravity_earth_g": 0.063,
+        "GM_km3_s2": 869.6,
+        "escape_velocity_km_s": 1.21,
+        "quality": "high"
+      },
+      "magnetic_field": {
+        "has_global_magnetic_field": false,
+        "field_type": "none_detected",
+        "magneticAxisTilt_deg": null,
+        "magneticAxisTilt_quality": "not_applicable",
+        "environment": "solar_wind_interaction"
+      },
+      "important_related_info": [
+        "Sistema Plutón-Caronte casi binario.",
+        "Atmósfera estacional tenue.",
+        "Órbita excéntrica e inclinada."
+      ]
+    },
+    "Haumea": {
+      "name_es": "Haumea",
+      "classification": "dwarf_planet_plutoid",
+      "age_gyr": 4.5,
+      "age_quality": "approx",
+      "gravity_field": {
+        "gravity_applies": true,
+        "surface_gravity_m_s2": 0.44,
+        "surface_gravity_earth_g": 0.0449,
+        "GM_km3_s2": 267.36,
+        "escape_velocity_km_s": 0.91,
+        "quality": "medium"
+      },
+      "magnetic_field": {
+        "has_global_magnetic_field": null,
+        "field_type": "unknown",
+        "magneticAxisTilt_deg": null,
+        "magneticAxisTilt_quality": "unknown",
+        "environment": "unknown"
+      },
+      "important_related_info": [
+        "Rotación extremadamente rápida.",
+        "Forma alargada/triaxial.",
+        "Tiene sistema de anillo reportado."
+      ]
+    },
+    "Makemake": {
+      "name_es": "Makemake",
+      "classification": "dwarf_planet_plutoid",
+      "age_gyr": 4.5,
+      "age_quality": "approx",
+      "gravity_field": {
+        "gravity_applies": true,
+        "surface_gravity_m_s2": 0.4,
+        "surface_gravity_earth_g": 0.0408,
+        "GM_km3_s2": 206.9,
+        "escape_velocity_km_s": 0.76,
+        "quality": "medium"
+      },
+      "magnetic_field": {
+        "has_global_magnetic_field": null,
+        "field_type": "unknown",
+        "magneticAxisTilt_deg": null,
+        "magneticAxisTilt_quality": "unknown",
+        "environment": "unknown"
+      },
+      "important_related_info": [
+        "Objeto transneptuniano con hielos volátiles.",
+        "Puede tener atmósfera estacional extremadamente tenue.",
+        "Parámetros físicos menos seguros que los planetas principales."
+      ]
+    },
+    "Eris": {
+      "name_es": "Eris",
+      "classification": "dwarf_planet_plutoid_scattered_disk",
+      "age_gyr": 4.5,
+      "age_quality": "approx",
+      "gravity_field": {
+        "gravity_applies": true,
+        "surface_gravity_m_s2": 0.77,
+        "surface_gravity_earth_g": 0.0785,
+        "GM_km3_s2": 1107.93,
+        "escape_velocity_km_s": 1.36,
+        "quality": "medium"
+      },
+      "magnetic_field": {
+        "has_global_magnetic_field": null,
+        "field_type": "unknown",
+        "magneticAxisTilt_deg": null,
+        "magneticAxisTilt_quality": "unknown",
+        "environment": "unknown"
+      },
+      "important_related_info": [
+        "Objeto del disco disperso.",
+        "Alta reflectividad.",
+        "Atmósfera probablemente colapsada/congelada durante gran parte de su órbita."
+      ]
+    },
+    "Charon": {
+      "name_es": "Caronte",
+      "classification": "natural_satellite_of_Pluto",
+      "age_gyr": 4.5,
+      "age_quality": "approx",
+      "gravity_field": {
+        "gravity_applies": true,
+        "surface_gravity_m_s2": 0.288,
+        "surface_gravity_earth_g": 0.0294,
+        "GM_km3_s2": 105.85,
+        "escape_velocity_km_s": 0.59,
+        "quality": "medium"
+      },
+      "magnetic_field": {
+        "has_global_magnetic_field": false,
+        "field_type": "none_detected",
+        "magneticAxisTilt_deg": null,
+        "magneticAxisTilt_quality": "not_applicable",
+        "environment": "none_known"
+      },
+      "important_related_info": [
+        "Bloqueado por marea con Plutón.",
+        "Importante para simular dinámica binaria Plutón-Caronte.",
+        "Gravedad baja."
+      ]
+    },
+    "Io": {
+      "name_es": "Ío",
+      "classification": "natural_satellite_of_Jupiter",
+      "age_gyr": 4.56,
+      "age_quality": "approx",
+      "gravity_field": {
+        "gravity_applies": true,
+        "surface_gravity_m_s2": 1.796,
+        "surface_gravity_earth_g": 0.1831,
+        "GM_km3_s2": 5959.92,
+        "escape_velocity_km_s": 2.56,
+        "quality": "high"
+      },
+      "magnetic_field": {
+        "has_global_magnetic_field": false,
+        "field_type": "plasma_interaction_with_Jupiter",
+        "magneticAxisTilt_deg": null,
+        "magneticAxisTilt_quality": "not_applicable",
+        "environment": "embedded_in_Jupiter_magnetosphere"
+      },
+      "important_related_info": [
+        "Mundo volcánicamente muy activo.",
+        "Calentamiento por marea extremo.",
+        "Interacción fuerte con la magnetosfera de Júpiter."
+      ]
+    },
+    "Europa": {
+      "name_es": "Europa",
+      "classification": "natural_satellite_of_Jupiter",
+      "age_gyr": 4.56,
+      "age_quality": "approx",
+      "gravity_field": {
+        "gravity_applies": true,
+        "surface_gravity_m_s2": 1.315,
+        "surface_gravity_earth_g": 0.1341,
+        "GM_km3_s2": 3202.71,
+        "escape_velocity_km_s": 2.03,
+        "quality": "high"
+      },
+      "magnetic_field": {
+        "has_global_magnetic_field": false,
+        "field_type": "induced_field_probable_subsurface_ocean",
+        "magneticAxisTilt_deg": null,
+        "magneticAxisTilt_quality": "not_applicable",
+        "environment": "embedded_in_Jupiter_magnetosphere"
+      },
+      "important_related_info": [
+        "Candidata fuerte a océano subsuperficial.",
+        "Campo inducido, no dipolo global propio estable.",
+        "Calentamiento por marea."
+      ]
+    },
+    "Ganymede": {
+      "name_es": "Ganímedes",
+      "classification": "natural_satellite_of_Jupiter",
+      "age_gyr": 4.56,
+      "age_quality": "approx",
+      "gravity_field": {
+        "gravity_applies": true,
+        "surface_gravity_m_s2": 1.428,
+        "surface_gravity_earth_g": 0.1456,
+        "GM_km3_s2": 9887.83,
+        "escape_velocity_km_s": 2.74,
+        "quality": "high"
+      },
+      "magnetic_field": {
+        "has_global_magnetic_field": true,
+        "field_type": "intrinsic_magnetic_field",
+        "magneticAxisTilt_deg": null,
+        "magneticAxisTilt_quality": "unknown_or_model_dependent",
+        "environment": "embedded_in_Jupiter_magnetosphere"
+      },
+      "important_related_info": [
+        "Luna más grande del Sistema Solar.",
+        "Tiene campo magnético intrínseco.",
+        "Puede tener océanos internos."
+      ]
+    },
+    "Callisto": {
+      "name_es": "Calisto",
+      "classification": "natural_satellite_of_Jupiter",
+      "age_gyr": 4.56,
+      "age_quality": "approx",
+      "gravity_field": {
+        "gravity_applies": true,
+        "surface_gravity_m_s2": 1.236,
+        "surface_gravity_earth_g": 0.126,
+        "GM_km3_s2": 7179.28,
+        "escape_velocity_km_s": 2.44,
+        "quality": "high"
+      },
+      "magnetic_field": {
+        "has_global_magnetic_field": false,
+        "field_type": "induced_field_possible_subsurface_ocean",
+        "magneticAxisTilt_deg": null,
+        "magneticAxisTilt_quality": "not_applicable",
+        "environment": "embedded_in_Jupiter_magnetosphere"
+      },
+      "important_related_info": [
+        "Superficie muy craterizada.",
+        "Posible océano subsuperficial.",
+        "Actividad geológica relativamente baja."
+      ]
+    },
+    "Titan": {
+      "name_es": "Titán",
+      "classification": "natural_satellite_of_Saturn",
+      "age_gyr": 4.56,
+      "age_quality": "approx",
+      "gravity_field": {
+        "gravity_applies": true,
+        "surface_gravity_m_s2": 1.352,
+        "surface_gravity_earth_g": 0.1379,
+        "GM_km3_s2": 8978.14,
+        "escape_velocity_km_s": 2.64,
+        "quality": "high"
+      },
+      "magnetic_field": {
+        "has_global_magnetic_field": false,
+        "field_type": "induced_or_external_interaction",
+        "magneticAxisTilt_deg": null,
+        "magneticAxisTilt_quality": "not_applicable",
+        "environment": "usually_within_Saturn_magnetosphere"
+      },
+      "important_related_info": [
+        "Atmósfera densa.",
+        "Ciclo de metano/etano.",
+        "Lagos y mares de hidrocarburos líquidos."
+      ]
+    },
+    "Triton": {
+      "name_es": "Tritón",
+      "classification": "natural_satellite_of_Neptune",
+      "age_gyr": 4.5,
+      "age_quality": "approx",
+      "gravity_field": {
+        "gravity_applies": true,
+        "surface_gravity_m_s2": 0.779,
+        "surface_gravity_earth_g": 0.0794,
+        "GM_km3_s2": 1428.3,
+        "escape_velocity_km_s": 1.45,
+        "quality": "medium"
+      },
+      "magnetic_field": {
+        "has_global_magnetic_field": false,
+        "field_type": "none_detected_or_unknown",
+        "magneticAxisTilt_deg": null,
+        "magneticAxisTilt_quality": "not_applicable_or_unknown",
+        "environment": "Neptune_magnetosphere_environment"
+      },
+      "important_related_info": [
+        "Órbita retrógrada; probablemente capturado.",
+        "Atmósfera tenue de nitrógeno.",
+        "Puede presentar actividad criovolcánica."
+      ]
+    },
+    "Orcus": {
+      "name_es": "Orcus",
+      "classification": "dwarf_planet_candidate_plutoid",
+      "age_gyr": 4.5,
+      "age_quality": "approx",
+      "gravity_field": {
+        "gravity_applies": true,
+        "surface_gravity_m_s2": 0.191,
+        "surface_gravity_earth_g": 0.0195,
+        "GM_km3_s2": 42.72,
+        "escape_velocity_km_s": 0.425,
+        "quality": "modeled_from_approx_mass_radius"
+      },
+      "magnetic_field": {
+        "has_global_magnetic_field": null,
+        "field_type": "unknown",
+        "magneticAxisTilt_deg": null,
+        "magneticAxisTilt_quality": "unknown",
+        "environment": "unknown"
+      },
+      "important_related_info": [
+        "Objeto transneptuniano candidato a planeta enano.",
+        "Parámetros físicos inciertos.",
+        "Gravedad calculada/modelada."
+      ]
+    },
+    "Quaoar": {
+      "name_es": "Quaoar",
+      "classification": "dwarf_planet_candidate_plutoid",
+      "age_gyr": 4.5,
+      "age_quality": "approx",
+      "gravity_field": {
+        "gravity_applies": true,
+        "surface_gravity_m_s2": 0.303,
+        "surface_gravity_earth_g": 0.0309,
+        "GM_km3_s2": 93.44,
+        "escape_velocity_km_s": 0.58,
+        "quality": "modeled_from_approx_mass_radius"
+      },
+      "magnetic_field": {
+        "has_global_magnetic_field": null,
+        "field_type": "unknown",
+        "magneticAxisTilt_deg": null,
+        "magneticAxisTilt_quality": "unknown",
+        "environment": "unknown"
+      },
+      "important_related_info": [
+        "Objeto transneptuniano.",
+        "Sistema de anillo reportado.",
+        "Parámetros físicos con incertidumbre."
+      ]
+    },
+    "Gonggong": {
+      "name_es": "Gonggong",
+      "classification": "dwarf_planet_candidate_scattered_disk",
+      "age_gyr": 4.5,
+      "age_quality": "approx",
+      "gravity_field": {
+        "gravity_applies": true,
+        "surface_gravity_m_s2": 0.309,
+        "surface_gravity_earth_g": 0.0315,
+        "GM_km3_s2": 116.8,
+        "escape_velocity_km_s": 0.616,
+        "quality": "modeled_from_approx_mass_radius"
+      },
+      "magnetic_field": {
+        "has_global_magnetic_field": null,
+        "field_type": "unknown",
+        "magneticAxisTilt_deg": null,
+        "magneticAxisTilt_quality": "unknown",
+        "environment": "unknown"
+      },
+      "important_related_info": [
+        "Objeto del disco disperso.",
+        "Parámetros físicos aproximados.",
+        "Gravedad baja."
+      ]
+    },
+    "Sedna": {
+      "name_es": "Sedna",
+      "classification": "dwarf_planet_candidate_detached_object",
+      "age_gyr": 4.5,
+      "age_quality": "approx",
+      "gravity_field": {
+        "gravity_applies": true,
+        "surface_gravity_m_s2": 0.24,
+        "surface_gravity_earth_g": 0.0245,
+        "GM_km3_s2": 60.0,
+        "escape_velocity_km_s": 0.49,
+        "quality": "very_rough_modeled_estimate",
+        "note": "La masa de Sedna no está bien determinada; esta gravedad es una estimación modelada."
+      },
+      "magnetic_field": {
+        "has_global_magnetic_field": null,
+        "field_type": "unknown",
+        "magneticAxisTilt_deg": null,
+        "magneticAxisTilt_quality": "unknown",
+        "environment": "unknown"
+      },
+      "important_related_info": [
+        "Objeto separado/transneptuniano extremo.",
+        "Órbita extremadamente distante.",
+        "Masa y gravedad muy inciertas."
+      ]
+    }
+  }
+}

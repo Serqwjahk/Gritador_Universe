@@ -304,6 +304,9 @@ struct ShaderLocs {
     int isCloudShell;
     // Marcas de impacto (Sistema 3: crateres, magma, onda expansiva)
     int rpImpactDir, rpImpactRadius, rpImpactEnergy, rpImpactAge, rpImpactCount;
+    // Inestabilidad estructural de gigantes/supergigantes (vertex + fragment)
+    int instabilityAmp;
+    int instabilityTime;
 };
 
 inline ShaderLocs GetShaderLocs(Shader& shader) {
@@ -403,6 +406,10 @@ inline ShaderLocs GetShaderLocs(Shader& shader) {
     locs.rpImpactEnergy  = GetShaderLocation(shader, "uImpactEnergy[0]");
     locs.rpImpactAge     = GetShaderLocation(shader, "uImpactAge[0]");
     locs.rpImpactCount   = GetShaderLocation(shader, "uImpactCount");
+
+    // Inestabilidad estructural de gigantes/supergigantes
+    locs.instabilityAmp  = GetShaderLocation(shader, "uInstabilityAmp");
+    locs.instabilityTime = GetShaderLocation(shader, "uInstabilityTime");
 
     for (int i = 0; i < MAX_LIGHTS; ++i) {
         locs.lightLum[i]    = GetShaderLocation(shader, TextFormat("lightLum[%d]", i));
@@ -720,6 +727,9 @@ inline void UploadBodyUniforms(Shader& shader, const ShaderLocs& locs, const Bod
     SetShaderValue(shader, locs.atmosColor, atmosCol,  SHADER_UNIFORM_VEC3);
     SetShaderValue(shader, locs.atmosFalloff, &atmosFalloff, SHADER_UNIFORM_FLOAT);
 
+    // Inestabilidad estructural (0 por defecto; calculado abajo para gigantes)
+    float instAmp = 0.0f, instTime = 0.0f;
+
     if (b.isStar) {
         float mass  = (float)(b.mass / M_SUN);
         float act   = b.stellarActivity;
@@ -749,7 +759,46 @@ inline void UploadBodyUniforms(Shader& shader, const ShaderLocs& locs, const Bod
         SetShaderValue(shader, locs.isSupernovaPhase,    &isSupernova, SHADER_UNIFORM_FLOAT);
         SetShaderValue(shader, locs.supernovaProgressLoc,&snProgress,  SHADER_UNIFORM_FLOAT);
         SetShaderValue(shader, locs.rotationCriticality, &rotCrit,     SHADER_UNIFORM_FLOAT);
+
+        // ── Inestabilidad estructural ────────────────────────────────────
+        // Amplitud basada en: fase gigante (continuo 0-1), masa, fase evolutiva
+        // y pulsacion (proxy de actividad convectiva). Sin efecto en secuencia
+        // principal (isGiant=0); crece gradualmente a medida que la estrella
+        // se infla hasta alcanzar el maximo en supergigantes con pulsaciones.
+        if (isGiant > 0.01f) {
+            float mRatio = std::max(0.1f, (float)(b.mass / M_SUN));
+
+            // Base: escala con cuanto se ha expandido la estrella
+            instAmp = isGiant * 0.065f;
+
+            // Masas > 8 M_sun tienen conveccion mucho mas energetica
+            if (mRatio > 8.0f)
+                instAmp *= (1.0f + std::clamp((mRatio - 8.0f) / 22.0f, 0.0f, 2.5f));
+
+            // Supergigantes ya inestables por perdida de masa y mezcla de capas
+            if (b.stellarPhase == StellarPhase::SUPERGIANT)
+                instAmp *= 2.0f;
+
+            // AGB y pulsos termicos: maxima violencia convectiva antes del final
+            if (b.stellarPhase == StellarPhase::AGB ||
+                b.stellarPhase == StellarPhase::THERMAL_PULSES)
+                instAmp *= 3.5f;
+
+            // Sinergia con pulsaciones: la amplitud de pulsacion ya codifica
+            // la actividad convectiva de la fase (Miras ~0.25, Cefeidas ~0.15)
+            instAmp *= (1.0f + b.pulsationAmplitude * 5.0f);
+
+            instAmp  = std::clamp(instAmp, 0.0f, 0.38f);
+
+            // Una "vuelta" convectiva ~ 1 ano simulado; visible a partir de x64
+            // stellarAge en lugar de stellarPhaseAge: no se resetea al cambiar fase
+            instTime = (float)std::fmod(b.stellarAge / 1.0e7, 1000.0);
+        }
     }
+
+    // Siempre subir (0 para planetas / estrellas en secuencia principal)
+    SetShaderValue(shader, locs.instabilityAmp,  &instAmp,  SHADER_UNIFORM_FLOAT);
+    SetShaderValue(shader, locs.instabilityTime, &instTime, SHADER_UNIFORM_FLOAT);
 
     int isGasGiantVal = b.isGasGiant ? 1 : 0;
     SetShaderValue(shader, locs.isGasGiant, &isGasGiantVal, SHADER_UNIFORM_INT);
@@ -824,7 +873,20 @@ inline void UploadBodyUniforms(Shader& shader, const ShaderLocs& locs, const Bod
         SetShaderValue(shader, locs.rpCloudBandStrength, &r.cloudBandStrength, SHADER_UNIFORM_FLOAT);
         SetShaderValue(shader, locs.rpHasCityLights, &r.hasCityLights, SHADER_UNIFORM_FLOAT);
         SetShaderValue(shader, locs.rpSeed,          &r.seed,          SHADER_UNIFORM_FLOAT);
-        SetShaderValue(shader, locs.rpPolarIceSize,  &r.polarIceSize,  SHADER_UNIFORM_FLOAT);
+        // Cuando un planeta con oceanos se congela, los continentes tambien
+        // deben cubrirse de nieve/hielo. Expandimos uPolarIceSize (que usa un
+        // umbral de latitud sobre abs(pos3D.y)+height) segun cuanto oceano ha
+        // congelado: cuando liquid < la mitad del nivel de agua original, los
+        // casquetes polares empiezan a bajar hacia el ecuador cubriendo tierra.
+        // A liquid=0 (congelo total) el umbral baja a -0.2, cubriendo el ecuador.
+        // Solo aplica a planetas con oceanos reales (r.waterLevel > 0.1).
+        float effectivePolarIce = r.polarIceSize;
+        if (r.waterLevel > 0.1f) {
+            float halfOcean  = r.waterLevel * 0.5f;
+            float frozenFrac = 1.0f - ClampF(liquid / halfOcean, 0.0f, 1.0f);
+            effectivePolarIce += frozenFrac * 2.5f;
+        }
+        SetShaderValue(shader, locs.rpPolarIceSize, &effectivePolarIce, SHADER_UNIFORM_FLOAT);
         SetShaderValue(shader, locs.rpMountainStrength, &r.mountainStrength, SHADER_UNIFORM_FLOAT);
         SetShaderValue(shader, locs.rpTerrainScale,     &r.terrainScale,     SHADER_UNIFORM_FLOAT);
 
@@ -1013,7 +1075,7 @@ inline void DrawBody(Body& b, const Camera3D& camera, const std::vector<Body>& b
     // cuerpos muertos normales (mass=0 sin isSupernovaRemnant) — los remanentes
     // con mass=0 e isSupernovaRemnant=true sí se renderizan (su shell expansiva).
     if (b.mass < 0.0) return;
-    if (b.mass == 0.0 && !b.isSupernovaRemnant) return;
+    if (b.mass == 0.0) return;
 
     const Vector3 p  = ToDrawPos(b.pos);
     float rR = (float)(b.radius * RENDER_SCALE);
@@ -1026,26 +1088,34 @@ inline void DrawBody(Body& b, const Camera3D& camera, const std::vector<Body>& b
     const Color dCol = ComputeBodyColor(b, p, bodies);
 
     if (!paused) {
-        b.rotationAngle += b.spinRateDeg * (float)(TIME_STEP / 1200.0);
-        b.cloudRotation += 0.7f * (float)(TIME_STEP / 1200.0);
-    }
-
-    // --- REMANENTE DE SUPERNOVA: solo shell expansiva, sin geometría de estrella ---
-    if (b.isSupernovaRemnant) {
-        float shellRad = (float)(b.supernovaRadius * RENDER_SCALE);
-        double remnantFade = std::max(0.0, 1.0 - b.stellarPhaseAge / 3.156e7);
-        float alpha = (float)(remnantFade * 0.35);
-        if (shellRad > 0.001f && alpha > 0.001f) {
-            BeginBlendMode(BLEND_ADDITIVE);
-            rlDisableDepthMask();
-            DrawSphereEx(p, shellRad,        20, 20, Fade({255, 130,  50, 255}, alpha * 0.5f));
-            DrawSphereEx(p, shellRad * 0.75f, 18, 18, Fade({200, 220, 255, 255}, alpha * 0.3f));
-            DrawSphereEx(p, shellRad * 0.5f,  14, 14, Fade({255, 200, 120, 255}, alpha * 0.2f));
-            rlDrawRenderBatchActive();
-            rlEnableDepthMask();
-            EndBlendMode();
+        // All arithmetic in double: float fmodf loses precision when the raw
+        // increment exceeds ~1e7 (ULP there ≈ 1, making mod-360 garbage at
+        // x128+ and causing the erratic speed-up/slow-down the user observed).
+        double scale = TIME_STEP / 1200.0;
+        // Compact remnants (pulsar/magnetar/NS) complete thousands of full
+        // rotations even at x1/16.  Sub-x1 sim speeds have no meaningful
+        // rotational physics to preserve, so clamp their visual scale floor
+        // to x1 so they never appear to slow down at lower sim speeds.
+        double rScale = scale;
+        if (b.isStar && (b.stellarPhase == StellarPhase::PULSAR   ||
+                         b.stellarPhase == StellarPhase::MAGNETAR  ||
+                         b.stellarPhase == StellarPhase::NEUTRON_STAR)) {
+            rScale = std::max(scale, 1.0);
         }
-        goto draw_overlay;
+        double rInc = fmod((double)b.spinRateDeg * rScale, 360.0);
+        // Anti-strobe for all compact remnants: fmod(180) folds near-360° increments
+        // (which appear as near-zero backwards motion) into [0°,180°); then values
+        // below 40° are flipped to [140°,180°) to eliminate near-zero slow zones.
+        // Result: always 40°-180°/frame (≥7 RPS) for pulsar, magnetar, and NS.
+        if (b.isStar && (b.stellarPhase == StellarPhase::PULSAR   ||
+                         b.stellarPhase == StellarPhase::MAGNETAR  ||
+                         b.stellarPhase == StellarPhase::NEUTRON_STAR)) {
+            rInc = fmod(rInc, 180.0);
+            if (rInc < 40.0) rInc = 180.0 - rInc;
+        }
+        b.rotationAngle = (float)fmod((double)b.rotationAngle + rInc, 360.0);
+        double cInc = fmod(0.7 * scale, 360.0);
+        b.cloudRotation = (float)fmod((double)b.cloudRotation + cInc, 360.0);
     }
 
     // --- ESTRELLA: renderizado procedural completo ---
@@ -1056,9 +1126,14 @@ inline void DrawBody(Body& b, const Camera3D& camera, const std::vector<Body>& b
         // pulsar (rR=0.00012) lo infla 8x respecto al radio fisico real,
         // causando que la esfera visual sea mucho mayor que la hitbox de
         // seleccion (que siempre usa el radio fisico sin piso).
+        // SUPERNOVA incluida: la estrella ya está colapsada al tamaño compacto
+        // para el 95% de la duración del evento. Sin esto, minRad=0.001f infla
+        // la esfera 9× durante la SN y al nacer el pulsar (minRad=0.0f) se ve
+        // un encogimiento instantáneo — el "POP" de tamaño reportado.
         float minRad = (b.stellarPhase == StellarPhase::PULSAR   ||
                         b.stellarPhase == StellarPhase::MAGNETAR  ||
-                        b.stellarPhase == StellarPhase::NEUTRON_STAR)
+                        b.stellarPhase == StellarPhase::NEUTRON_STAR ||
+                        b.stellarPhase == StellarPhase::SUPERNOVA)
                        ? 0.0f : 0.001f;
         float rad = std::max(minRad, rR);
 
@@ -1075,21 +1150,9 @@ inline void DrawBody(Body& b, const Camera3D& camera, const std::vector<Body>& b
         DrawMesh(planetModel.meshes[0], planetModel.materials[0],
                  TidalBodyTransform(p, rad, b.rotationAngle, b));
 
-        // Shell de supernova activa (SUPERNOVA en progreso)
-        if (b.supernovaProgress > 0.001 && b.stellarPhase == StellarPhase::SUPERNOVA) {
-            float shellRad = (float)(b.supernovaRadius * RENDER_SCALE);
-            float snAlpha  = (float)(SupernovaLightCurve(b.supernovaProgress) * 0.7);
-            if (shellRad > 0.001f && snAlpha > 0.001f) {
-                BeginBlendMode(BLEND_ADDITIVE);
-                rlDisableDepthMask();
-                DrawSphereEx(p, shellRad,        20, 20, Fade({255, 200,  80, 255}, snAlpha * 0.6f));
-                DrawSphereEx(p, shellRad * 0.7f, 18, 18, Fade({255, 255, 200, 255}, snAlpha * 0.4f));
-                DrawSphereEx(p, shellRad * 0.4f, 14, 14, Fade({200, 230, 255, 255}, snAlpha * 0.3f));
-                rlDrawRenderBatchActive();
-                rlEnableDepthMask();
-                EndBlendMode();
-            }
-        }
+        // Shell de supernova activa: ahora la dibuja DrawSupernova (raymarcher
+        // volumétrico) desde el bucle de render en main.cpp, donde está
+        // disponible la cámara. Ya no se dibuja aquí.
 
         // Halo/corona aditivo — para TODOS los tipos de estrella incluyendo
         // pulsares y magnetares. Los halos son efectos visuales aditivos
@@ -1737,6 +1800,132 @@ struct FlareShaderLocs {
     int flareDrainMode, flareDrainStart;
 };
 
+// ── Locs del shader volumétrico de supernova (ver SUPERNOVA_*_SRC) ──
+struct SupernovaShaderLocs {
+    int camPos, center, radius, time, progress, brightness, opacity, seed;
+    int colorCore, colorMid, colorEdge;
+};
+
+inline SupernovaShaderLocs GetSupernovaShaderLocs(Shader& sh) {
+    SupernovaShaderLocs l;
+    l.camPos     = GetShaderLocation(sh, "uCamPos");
+    l.center     = GetShaderLocation(sh, "uCenter");
+    l.radius     = GetShaderLocation(sh, "uRadius");
+    l.time       = GetShaderLocation(sh, "uTime");
+    l.progress   = GetShaderLocation(sh, "uProgress");
+    l.brightness = GetShaderLocation(sh, "uBrightness");
+    l.opacity    = GetShaderLocation(sh, "uOpacity");
+    l.seed       = GetShaderLocation(sh, "uSeed");
+    l.colorCore  = GetShaderLocation(sh, "uColorCore");
+    l.colorMid   = GetShaderLocation(sh, "uColorMid");
+    l.colorEdge  = GetShaderLocation(sh, "uColorEdge");
+    return l;
+}
+
+// ── Dibujo volumétrico de la supernova ───────────────────────
+// Se llama para estrellas en fase SUPERNOVA. Traza un raymarch esférico
+// (shader) sobre un cubo acotante. La paleta de color depende del progenitor
+// (temperatura congelada de la supergigante antes de explotar):
+//   · frío  (< 5000K, supergigante roja / Tipo II)  → tipo Cangrejo: filamentos
+//     rojos/naranjas + capa turquesa (oxígeno) + núcleo blanco-azul.
+//   · medio (5000–12000K)                           → naranja/amarillo + rojo.
+//   · caliente (> 12000K, progenitor azul)          → púrpura/azul + blanco.
+inline void DrawSupernova(const Body& b, const Camera3D& cam, Shader& sh,
+                          const SupernovaShaderLocs& l, Model& cubeModel)
+{
+    if (b.stellarPhase != StellarPhase::SUPERNOVA) return;
+    // Emerge cuando la estrella ya está casi completamente compactada (~90%,
+    // progress 0.045): primero se ve la implosión, luego revienta la explosión.
+    if (b.supernovaProgress <= 0.045) return;
+
+    const Vector3 p = ToDrawPos(b.pos);
+    // Fireball base = radio original de la supergigante (guardado en kickVelocity
+    // al iniciar la SN, en metros). La bola de fuego arranca a una fracción de
+    // ese tamaño y crece con la onda de choque (supernovaRadius).
+    double origRadiusM = (b.kickVelocity > 0.0) ? b.kickVelocity : b.radius;
+    float  baseR  = (float)(origRadiusM * RENDER_SCALE);
+    float  shockR = (float)(b.supernovaRadius * RENDER_SCALE);
+    // La explosión emerge PEQUEÑA desde el núcleo de la estrella y crece con la
+    // onda de choque (antes arrancaba en baseR*0.5 y aparecía ya enorme, lejos
+    // del núcleo). El pequeño baseR*0.08 es la bola de fuego inicial en el centro.
+    float  radius = shockR + baseR * 0.08f;
+    radius = std::max(radius, baseR * 0.05f);
+    if (radius <= 0.0f) return;
+
+    float prog = (float)b.supernovaProgress;
+    // Brillo: destello fuerte de la curva de luz + glow base persistente para
+    // que el remanente en expansión siga visible tras el pico de luminosidad.
+    float lightCurve = (float)SupernovaLightCurve(b.supernovaProgress);
+    // Destello suave en el pico + glow base persistente. Multiplicador bajo
+    // (2.2) para que el tonemap NO sature a blanco puro al emerger la SN.
+    float brightness = 0.6f + 2.2f * lightCurve;
+
+    // Opacidad (presencia): fade-IN al emerger (no aparecer de golpe) y fade-OUT
+    // en el último 30% de la fase (no desaparecer de golpe al volverse objeto
+    // compacto). Escala col y alpha juntos en el shader (uOpacity).
+    auto smooth01 = [](float a, float b2, float x) {
+        float t = std::clamp((x - a) / (b2 - a), 0.0f, 1.0f);
+        return t * t * (3.0f - 2.0f * t);
+    };
+    float fadeIn  = smooth01(0.045f, 0.10f, prog);
+    float fadeOut = 1.0f - smooth01(0.70f, 1.0f, prog);
+    float opacity = fadeIn * fadeOut;
+
+    // Tiempo de animación en tiempo SIMULADO (coherente con el resto de la sim):
+    // la turbulencia evoluciona según stellarPhaseAge, no según frames reales.
+    float animTime = (float)(b.stellarPhaseAge / 3.0e4);
+
+    float seed = (float)((b.id * 2654435761ull) % 100000ull) * 1e-3f;
+
+    // ── Paleta según progenitor (temperatura previa a la explosión) ──
+    float progTemp = (b.flareDeathTemp > 100.0f)
+                     ? b.flareDeathTemp : (float)b.temperature;
+    Vector3 cCore, cMid, cEdge;
+    if (progTemp < 5000.0f) {
+        // Supergigante roja → Nebulosa del Cangrejo
+        cCore = {0.75f, 0.90f, 1.00f}; // núcleo blanco-azul
+        cMid  = {0.20f, 0.85f, 0.70f}; // turquesa (oxígeno)
+        cEdge = {1.00f, 0.35f, 0.12f}; // filamentos rojo-naranja
+    } else if (progTemp < 12000.0f) {
+        // Progenitor templado → cálido
+        cCore = {1.00f, 0.98f, 0.85f};
+        cMid  = {1.00f, 0.62f, 0.20f};
+        cEdge = {0.85f, 0.12f, 0.10f};
+    } else {
+        // Progenitor azul caliente → púrpura/azul
+        cCore = {1.00f, 0.95f, 1.00f};
+        cMid  = {0.45f, 0.55f, 1.00f};
+        cEdge = {0.70f, 0.15f, 0.85f};
+    }
+
+    Vector3 camPos = cam.position;
+    SetShaderValue(sh, l.camPos,     &camPos,     SHADER_UNIFORM_VEC3);
+    SetShaderValue(sh, l.center,     &p,          SHADER_UNIFORM_VEC3);
+    SetShaderValue(sh, l.radius,     &radius,     SHADER_UNIFORM_FLOAT);
+    SetShaderValue(sh, l.time,       &animTime,   SHADER_UNIFORM_FLOAT);
+    SetShaderValue(sh, l.progress,   &prog,       SHADER_UNIFORM_FLOAT);
+    SetShaderValue(sh, l.brightness, &brightness, SHADER_UNIFORM_FLOAT);
+    SetShaderValue(sh, l.opacity,    &opacity,    SHADER_UNIFORM_FLOAT);
+    SetShaderValue(sh, l.seed,       &seed,       SHADER_UNIFORM_FLOAT);
+    SetShaderValue(sh, l.colorCore,  &cCore,      SHADER_UNIFORM_VEC3);
+    SetShaderValue(sh, l.colorMid,   &cMid,       SHADER_UNIFORM_VEC3);
+    SetShaderValue(sh, l.colorEdge,  &cEdge,      SHADER_UNIFORM_VEC3);
+
+    // Cubo acotante: escala 1.45× el radio para contener la esfera de marcha
+    // (1.4×uRadius, que a su vez abarca los lóbulos deformados hasta r~1.2).
+    // Se renderizan las caras TRASERAS (cull frontal) para que el volumen se
+    // dibuje también cuando la cámara está DENTRO de la esfera (zoom cercano).
+    BeginBlendMode(BLEND_ALPHA_PREMULTIPLY);
+    rlDisableDepthMask();
+    rlSetCullFace(RL_CULL_FACE_FRONT);
+    DrawModelEx(cubeModel, p, {0.0f, 1.0f, 0.0f}, 0.0f,
+                {radius * 1.45f, radius * 1.45f, radius * 1.45f}, WHITE);
+    rlDrawRenderBatchActive();
+    rlSetCullFace(RL_CULL_FACE_BACK);
+    rlEnableDepthMask();
+    EndBlendMode();
+}
+
 inline FlareShaderLocs GetFlareShaderLocs(Shader& sh) {
     FlareShaderLocs l;
     l.realTime        = GetShaderLocation(sh, "realTime");
@@ -2227,86 +2416,142 @@ inline void DrawMagnetarEffect(const Body& b, Shader& sh, const FlareShaderLocs&
     rlDisableBackfaceCulling();
 
     // ────────────────────────────────────────────────────────────
-    // LINEAS DE CAMPO MAGNETICO (ecuacion dipolar real)
+    // LINEAS DE CAMPO MAGNETICO — DOS CORONAS EN CAPAS
+    //
     // r(θ) = r₀ · sin²(θ),  θ ∈ [0, π]  (polo N → ecuador → polo S)
     //
-    // Esto garantiza que:
-    //  • θ=0 → r=0 → inicio en el polo norte de la NS
-    //  • θ=π/2 → r=r₀ → maximo apogeo ecuatorial
-    //  • θ=π → r=0 → regreso al polo sur de la NS
-    //  • Todo el campo rota con b.rotationAngle porque 'pole' y 'bRad'
-    //    se recalculan desde axialTilt+rotationAngle cada frame.
+    // Corona interna: loops cortos y brillantes, r0 = 2.5–4.5 × rR
+    // Corona externa: loops largos y tenues,    r0 = 8–13  × rR
+    //
+    // CLAVE: r0 depende de la CAPA, no del angulo azimutal.
+    // Ambas coronas cubren los 360° completos de forma independiente.
     // ────────────────────────────────────────────────────────────
-    const int N_LINES = 20;  // filamentos azimutales
-    const int SEGS    = 20;  // segmentos por filamento
 
-    for (int i = 0; i < N_LINES; i++) {
-        float h0 = dh(b.id, i*5+0);
-        float h1 = dh(b.id, i*5+1);
-        float h2 = dh(b.id, i*5+2);
+    // ── CORONA INTERNA (cercana, corta, brillante) ──────────────
+    {
+        const int N_INNER = 20;
+        const int SEGS_I  = 16;
 
-        // Angulo azimutal base uniformemente distribuido + pequena variacion aleatoria
-        float phi = (float)i / N_LINES * 2.0f * PI + h0 * 0.25f;
+        for (int i = 0; i < N_INNER; i++) {
+            float h0 = dh(b.id, i*5+0);
+            float h1 = dh(b.id, i*5+1);
+            float h2 = dh(b.id, i*5+2);
 
-        // Turbulencia temporal del angulo (las lineas "vibran" lentamente)
-        phi += (0.1f + h1 * 0.2f) * sinf(rt * (0.2f + h2 * 0.5f) + h0 * 12.0f);
+            // Phi uniformemente distribuido en 360°, sin dependencia de tamano
+            float phi = (float)i / N_INNER * 2.0f * PI + h0 * 0.3f;
+            phi += (0.06f + h1 * 0.12f) * sinf(rt * (0.2f + h2 * 0.4f) + h0 * 12.0f);
 
-        // r0: extension ecuatorial de esta linea (varia entre ~3x y ~10x rR)
-        // Lineas cercanas al polo (i cerca de 0 o N_LINES) son mas cortas.
-        float colatParam = 0.1f + 0.8f * fabsf(sinf((float)i / N_LINES * PI));
-        float r0 = rR * (3.0f + 7.0f * colatParam);
+            // r0 pequeno, varia solo por hash (no por angulo)
+            float r0 = rR * (2.5f + h0 * 2.0f);   // 2.5–4.5 × rR
 
-        // Direccion azimutal en el plano perpendicular al polo
-        float cp = cosf(phi), sp = sinf(phi);
-        Vector3 bRad = Vector3Normalize({
-            px.x*cp + pz.x*sp,
-            px.y*cp + pz.y*sp,
-            px.z*cp + pz.z*sp
-        });
+            float cp = cosf(phi), sp = sinf(phi);
+            Vector3 bRad = Vector3Normalize({
+                px.x*cp + pz.x*sp,
+                px.y*cp + pz.y*sp,
+                px.z*cp + pz.z*sp
+            });
 
-        // Color: mas cercano al polo = mas brillante/blanco; ecuatorial = azul
-        float brightness  = 0.4f + 0.6f * (1.0f - colatParam * 0.8f);
-        unsigned char alpha = (unsigned char)(int(160 * brightness));
-        Color lineColor;
-        int cc = i % 4;
-        switch(cc) {
-        case 0: lineColor = {  60, 130, 255, alpha }; break; // azul
-        case 1: lineColor = {  20, 200, 255, alpha }; break; // cian
-        case 2: lineColor = { 160,  70, 255, alpha }; break; // violeta
-        default:lineColor = { 210, 235, 255, alpha }; break; // blanco-azul
-        }
-
-        // Trazar la curva dipolar como capsulas 3D (tubo redondo)
-        // DrawCapsule da la misma apariencia cilindrica que el nuevo
-        // GenMeshArchTube para que los filamentos del campo magnetico
-        // sean visualmente consistentes con las llamaradas estelares.
-        Vector3 prev  = {};
-        bool    hasPrev = false;
-        float   prevR   = 0.0f;
-
-        for (int s = 0; s <= SEGS; s++) {
-            float theta = PI * (float)s / SEGS;
-            float sinT  = sinf(theta);
-            float cosT  = cosf(theta);
-            float r     = r0 * sinT * sinT;
-
-            // Ruido sutil en r
-            r *= 1.0f + 0.04f * sinf(rt * 0.5f + s * 0.9f + phi * 3.0f);
-
-            Vector3 pos = {
-                p.x + pole.x * r * cosT + bRad.x * r * sinT,
-                p.y + pole.y * r * cosT + bRad.y * r * sinT,
-                p.z + pole.z * r * cosT + bRad.z * r * sinT
-            };
-
-            if (hasPrev && r > rR * 0.8f && prevR > rR * 0.8f) {
-                // Radio del tubo: maximo en el ecuador (r=r0), cero en los polos
-                float capsR = rR * (0.012f + 0.05f * sinT * sinT) * brightness;
-                DrawCapsule(prev, pos, capsR, 4, 1, lineColor);
+            float brightness = 0.65f + 0.35f * h1;
+            unsigned char alpha = (unsigned char)(int(200.0f * brightness));
+            Color lineColor;
+            switch (i % 4) {
+            case 0:  lineColor = {  80, 160, 255, alpha }; break; // azul brillante
+            case 1:  lineColor = {  40, 220, 255, alpha }; break; // cian brillante
+            case 2:  lineColor = { 180,  90, 255, alpha }; break; // violeta
+            default: lineColor = { 230, 245, 255, alpha }; break; // blanco-azul
             }
-            prev    = pos;
-            prevR   = r;
-            hasPrev = (r > rR * 0.3f);
+
+            Vector3 prev  = {};
+            bool    hasPrev = false;
+            float   prevR   = 0.0f;
+
+            for (int s = 0; s <= SEGS_I; s++) {
+                float theta = PI * (float)s / SEGS_I;
+                float sinT  = sinf(theta);
+                float cosT  = cosf(theta);
+                float r     = r0 * sinT * sinT;
+                r *= 1.0f + 0.04f * sinf(rt * 0.6f + s * 0.9f + phi * 3.0f);
+
+                Vector3 pos = {
+                    p.x + pole.x * r * cosT + bRad.x * r * sinT,
+                    p.y + pole.y * r * cosT + bRad.y * r * sinT,
+                    p.z + pole.z * r * cosT + bRad.z * r * sinT
+                };
+
+                if (hasPrev && r > rR * 0.8f && prevR > rR * 0.8f) {
+                    float capsR = rR * (0.018f + 0.065f * sinT * sinT) * brightness;
+                    DrawCapsule(prev, pos, capsR, 4, 1, lineColor);
+                }
+                prev    = pos;
+                prevR   = r;
+                hasPrev = (r > rR * 0.3f);
+            }
+            if (i % 8 == 7) rlDrawRenderBatchActive();
+        }
+    }
+    rlDrawRenderBatchActive();
+
+    // ── CORONA EXTERNA (lejana, larga, tenue) ───────────────────
+    {
+        const int N_OUTER = 20;
+        const int SEGS_O  = 24;
+
+        for (int i = 0; i < N_OUTER; i++) {
+            // Semillas separadas de la corona interna (offset +100)
+            float h0 = dh(b.id, (100 + i)*5+0);
+            float h1 = dh(b.id, (100 + i)*5+1);
+            float h2 = dh(b.id, (100 + i)*5+2);
+
+            // Phi desplazado media ranura respecto a la corona interna (intercalado)
+            float phi = ((float)i + 0.5f) / N_OUTER * 2.0f * PI + h0 * 0.2f;
+            phi += (0.08f + h1 * 0.15f) * sinf(rt * (0.15f + h2 * 0.3f) + h0 * 9.0f);
+
+            // r0 grande, varia solo por hash (no por angulo)
+            float r0 = rR * (8.0f + h0 * 5.0f);   // 8–13 × rR
+
+            float cp = cosf(phi), sp = sinf(phi);
+            Vector3 bRad = Vector3Normalize({
+                px.x*cp + pz.x*sp,
+                px.y*cp + pz.y*sp,
+                px.z*cp + pz.z*sp
+            });
+
+            float brightness = 0.25f + 0.25f * h1;
+            unsigned char alpha = (unsigned char)(int(80.0f * brightness));
+            Color lineColor;
+            switch (i % 4) {
+            case 0:  lineColor = {  40,  90, 230, alpha }; break; // azul tenue
+            case 1:  lineColor = {  15, 140, 230, alpha }; break; // cian tenue
+            case 2:  lineColor = { 130,  40, 220, alpha }; break; // violeta tenue
+            default: lineColor = { 190, 210, 250, alpha }; break; // blanco-azul tenue
+            }
+
+            Vector3 prev  = {};
+            bool    hasPrev = false;
+            float   prevR   = 0.0f;
+
+            for (int s = 0; s <= SEGS_O; s++) {
+                float theta = PI * (float)s / SEGS_O;
+                float sinT  = sinf(theta);
+                float cosT  = cosf(theta);
+                float r     = r0 * sinT * sinT;
+                r *= 1.0f + 0.05f * sinf(rt * 0.3f + s * 1.1f + phi * 2.0f);
+
+                Vector3 pos = {
+                    p.x + pole.x * r * cosT + bRad.x * r * sinT,
+                    p.y + pole.y * r * cosT + bRad.y * r * sinT,
+                    p.z + pole.z * r * cosT + bRad.z * r * sinT
+                };
+
+                if (hasPrev && r > rR * 0.8f && prevR > rR * 0.8f) {
+                    float capsR = rR * (0.005f + 0.018f * sinT * sinT) * brightness;
+                    DrawCapsule(prev, pos, capsR, 4, 1, lineColor);
+                }
+                prev    = pos;
+                prevR   = r;
+                hasPrev = (r > rR * 0.3f);
+            }
+            if (i % 8 == 7) rlDrawRenderBatchActive();
         }
     }
     rlDrawRenderBatchActive();
@@ -2473,23 +2718,29 @@ inline void DrawStarFlares(const Body& b, Shader& sh, const FlareShaderLocs& fl,
                             Model& puffModel,
                             int nFlares)
 {
-    if (!b.isStar || b.stellarActivity < 0.01f) return;
-    // Enanas blancas y negras: ya NO son estrellas en fusion activa --
-    // sin conveccion ni presion de radiacion que sostenga llamaradas.
-    // Enana blanca = nucleo compacto de C/O enfriandose; enana negra =
-    // lo mismo, ya completamente fria. Ninguna tiene cromosfera
-    // activa ni campo magnetico renovado por conveccion que justifique
-    // este tipo de arcos/jets. (Enana azul tampoco, pero ya queda
-    // excluida por stellarActivity ~ 0 al ser una fase hipotetica fria.)
-    if (b.stellarPhase == StellarPhase::WHITE_DWARF ||
-        b.stellarPhase == StellarPhase::BLACK_DWARF  ||
-        b.stellarPhase == StellarPhase::PULSAR        ||
-        b.stellarPhase == StellarPhase::MAGNETAR) return;
+    if (!b.isStar) return;
+
+    // Fases sin fusion activa (enana blanca/negra, remanente compacto) y el
+    // evento de supernova: las llamaradas NO existen permanentemente aqui, pero
+    // en vez de cortarlas de golpe se deja que las vivas ejecuten su animacion
+    // de muerte (reabsorcion) conducida por flareDeathProgress (0→1). Una vez
+    // completada la reabsorcion (≈1) ya no se dibuja nada.
+    bool noFlarePhase = StarPhaseHasNoFlares(b.stellarPhase);
+    if (noFlarePhase && b.flareDeathProgress >= 0.999f) return;
+
+    // Estrella con actividad ~0 y sin reabsorcion en curso: nada que animar.
+    bool reabsorbing = b.flareDeathProgress > 0.0f && b.flareDeathProgress < 0.999f;
+    if (b.stellarActivity < 0.01f && !reabsorbing) return;
 
     float rR   = std::max(0.001f, (float)(b.radius * RENDER_SCALE));
     Vector3 p  = ToDrawPos(b.pos);
     float act  = b.stellarActivity;
-    float tp   = (float)b.temperature;
+    // Durante la muerte estelar, usar la temperatura CONGELADA al inicio de la
+    // reabsorción: 'tp' alimenta mDwarf/period/color, y el pico térmico de la
+    // supernova haría saltar la fase (fmod reloj/period) aunque el reloj esté
+    // congelado -- con la temperatura fija, el period y la fase quedan estables.
+    float tp   = (b.flareDeathProgress > 0.0f)
+                 ? b.flareDeathTemp : (float)b.temperature;
     float rt   = (float)g_flareClock;
 
     float mDwarf = 1.0f - ClampF((tp - 3400.0f) / (4100.0f - 3400.0f), 0.0f, 1.0f);
@@ -2510,23 +2761,14 @@ inline void DrawStarFlares(const Body& b, Shader& sh, const FlareShaderLocs& fl,
                     || b.stellarPhase == StellarPhase::SUPERNOVA;
     if (dyingPhase) mDwarf *= 0.30f;
 
-    // Inestabilidad: una estrella a punto de morir (convección violenta,
-    // capas externas en colapso/expansión descontrolada) NO deberia verse
-    // tan predecible/ciclica como una enana estable en plena secuencia
-    // principal -- pero el bug de parpadeo (ver comentario de starSeed
-    // mas abajo) demostro que cualquier cosa que cambie el patron de
-    // llamaradas CADA FRAME se ve como ruido catastrofico, no como
-    // "inestabilidad". La solucion: el patron SI se reordena para
-    // estrellas inestables, pero solo en saltos discretos cada pocos
-    // segundos (CHAOS_EPOCH_SEC, ver mas abajo) -- nunca frame a frame.
-    float instability = 0.0f;
-    switch (b.stellarPhase) {
-        case StellarPhase::RED_GIANT:        instability = 0.35f; break;
-        case StellarPhase::SUPERGIANT:       instability = 0.85f; break;
-        case StellarPhase::SUPERNOVA:        instability = 1.00f; break;
-        case StellarPhase::PLANETARY_NEBULA: instability = 0.25f; break;
-        default: break; // enana blanca/remanente: ya colapsada, no "agonizante"
-    }
+    // NOTA: antes existía aquí un "reordenamiento por inestabilidad" que cada
+    // CHAOS_EPOCH_SEC (6s) hacía saltar el seed del patrón entero para gigantes/
+    // supergigantes -- pero ese salto discreto recalculaba de golpe el periodo,
+    // fase y posición de TODAS las llamaradas a la vez, causando el "corte" que
+    // se veía como todas las flares desapareciendo y reiniciándose desde 0.
+    // Eliminado: ahora cada llamarada tiene un periodo fijo y evoluciona su
+    // propio ciclo (nacer→vivir→reabsorberse→renacer) de forma continua e
+    // independiente, escalonada respecto a las demás -- nunca un reset global.
 
     float kDwarf =
         ClampF((tp - 3800.0f) / (4800.0f - 3800.0f), 0.0f, 1.0f) *
@@ -2584,9 +2826,9 @@ inline void DrawStarFlares(const Body& b, Shader& sh, const FlareShaderLocs& fl,
     // segundos) sin reintroducir el parpadeo frame-a-frame original,
     // porque dentro de cada epoch el patron vuelve a ser perfectamente
     // estable.
-    const float CHAOS_EPOCH_SEC = 6.0f;
-    float chaosEpoch = floorf(rt / CHAOS_EPOCH_SEC) * instability * 53.731f;
-    float effSeed = starSeed + chaosEpoch;
+    // Seed FIJO por estrella: sin saltos discretos. Cada llamarada cicla en su
+    // propio periodo continuo -- sin cortes ni reinicios globales sincronizados.
+    float effSeed = starSeed;
     // Cantidad de arcos segun actividad: 5 base + hasta 7 extra
     // M: muchas llamaradas. K: intermedio. G/Sol: más estable.
     // Slots visibles potenciales.
@@ -2608,6 +2850,20 @@ inline void DrawStarFlares(const Body& b, Shader& sh, const FlareShaderLocs& fl,
     float starRotYaw = b.rotationAngle;
     float giantF     = std::min((float)(b.mass / M_SUN) * 0.12f, 1.6f);
 
+    // Multiplicador global de muerte: al morir la estrella (flareDeathProgress
+    // 0→1) TODAS las llamaradas vivas colapsan (lifeScale) y se apagan
+    // (flareFade) de forma suave. deathMul=1 mientras la estrella vive → sin
+    // efecto; deathMul→0 al completarse la reabsorcion.
+    float deathMul = 1.0f - ss(0.0f, 1.0f, b.flareDeathProgress);
+
+    // Reloj de CICLO DE VIDA de las flares. Mientras la estrella muere, se
+    // congela en el instante en que empezó la reabsorción (flareDeathClock):
+    // así ninguna flare nueva nace a mitad de la muerte y ninguna termina su
+    // ciclo por su cuenta -- solo se reabsorben (vía deathMul) las que ya
+    // estaban vivas. El shimmer interno del plasma (fl.realTime) SÍ sigue vivo
+    // con 'rt' para que los arcos moribundos no se vean congelados.
+    float rtLife = (b.flareDeathProgress > 0.0f) ? b.flareDeathClock : rt;
+
     for (int i = 0; i < K; i++) {
         float fi = (float)i;
 
@@ -2627,13 +2883,12 @@ inline void DrawStarFlares(const Body& b, Shader& sh, const FlareShaderLocs& fl,
         period *= (1.0f - mDwarf * 0.62f);              // enanas rojas: más frecuente
         period *= (1.0f + gDwarf * 0.40f);              // tipo Sol/G: algo mas pausado
         period = std::max(2.0f, period);
-        float phase  = fmodf(rt / period + hL2, 1.0f);  // fraccion dentro del ciclo actual
+        float phase  = fmodf(rtLife / period + hL2, 1.0f);  // fraccion dentro del ciclo actual
 
         // Cada ciclo de vida es un EVENTO nuevo.
         // Antes: la posicion dependia solo de i + starSeed -> misma llamarada eterna.
-        // Ahora: i + cycleId + effSeed -> misma durante el ciclo, distinta al renacer
-        // (o al saltar de epoch de caos, en estrellas inestables).
-        float cycleId = floorf(rt / period + hL2);
+        // Ahora: i + cycleId + effSeed -> misma durante el ciclo, distinta al renacer.
+        float cycleId = floorf(rtLife / period + hL2);
         float eventSeed = effSeed + fi * 37.173f + cycleId * 91.731f;
 
         // Probabilidad de que este evento realmente exista. ANTES (base
@@ -2688,6 +2943,10 @@ inline void DrawStarFlares(const Body& b, Shader& sh, const FlareShaderLocs& fl,
             lifeScale = 1.0f - ss(0.15f, 1.0f, deathT) * 0.65f;
             flareFade = 1.0f - ss(0.00f, 1.0f, deathT);
         }
+        // Reabsorción global al morir la estrella: colapsa y apaga esta flare
+        // desde su estado actual, sin importar en qué punto del ciclo esté.
+        lifeScale *= deathMul;
+        flareFade *= deathMul;
         if (flareGrow < 0.02f) continue;
         if (lifeScale < 0.04f) continue;
 
@@ -2832,7 +3091,9 @@ inline void DrawStarFlares(const Body& b, Shader& sh, const FlareShaderLocs& fl,
 
                 // No colapsa geométricamente hacia la estrella.
                 // Mantiene el arco y se va vaciando hacia el pie final.
-                lifeScale = 1.0f;
+                // deathMul<1 solo cuando la estrella entera muere (supernova/
+                // enana blanca): entonces también colapsa el arco drenante.
+                lifeScale = deathMul;
 
                 // ANTES: el fade global se quedaba en 1.0 (brillo pleno) hasta
                 // el 82% de deathT y solo se apagaba en el 18% final -- en un
@@ -2843,7 +3104,7 @@ inline void DrawStarFlares(const Body& b, Shader& sh, const FlareShaderLocs& fl,
                 // (flareDrainStart, arriba) sigue dando la sensacion de
                 // "vaciarse hacia el segundo pie", pero ya no depende de un
                 // fade que llega tarde para que se note gradual.
-                flareFade = 1.0f - ss(0.00f, 1.0f, deathT);
+                flareFade = (1.0f - ss(0.00f, 1.0f, deathT)) * deathMul;
 
                 SetShaderValue(sh, fl.flareGrow,       &flareGrow,       SHADER_UNIFORM_FLOAT);
                 SetShaderValue(sh, fl.flareFade,       &flareFade,       SHADER_UNIFORM_FLOAT);

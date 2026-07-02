@@ -264,6 +264,24 @@ struct Body {
     double        supernovaRadius      = 0.0;   // radio onda de choque (metros)
     bool          isSupernovaRemnant   = false; // true: nebulosa sin masa ni física
 
+    // Reabsorción de llamaradas al morir la estrella (supernova, enana blanca,
+    // remanente compacto): 0 = flares activas; 1 = totalmente reabsorbidas.
+    // Sube gradualmente mientras la estrella está en una fase sin fusión activa,
+    // haciendo que las llamaradas vivas ejecuten su animación de muerte en vez
+    // de desaparecer de golpe. Ver DrawStarFlares (renderer.h).
+    float         flareDeathProgress   = 0.0f;
+    // Snapshot del reloj de flares (g_flareClock) en el instante en que empieza
+    // la muerte. Durante la reabsorción el ciclo de vida de las flares se
+    // CONGELA en este valor: así solo se reabsorben las que estaban vivas y no
+    // nace ninguna nueva a mitad de la muerte. Ver DrawStarFlares.
+    float         flareDeathClock      = 0.0f;
+    // Snapshot de la temperatura en ese mismo instante. El 'period' de cada
+    // flare depende de la temperatura; durante la supernova la temperatura se
+    // dispara y haría saltar fmod(reloj/period) caóticamente aunque el reloj
+    // esté congelado -- congelar también la temperatura mantiene el period (y
+    // por tanto la fase) fijos. Ver DrawStarFlares.
+    float         flareDeathTemp       = 0.0f;
+
     // Control de evolución desde GUI
     bool          stellarManualOverride = false; // true: GUI controla la fase, auto pausa
 
@@ -283,11 +301,16 @@ struct Body {
     uint8_t       compactRemnantType   = 0;     // 0=ninguno, 1=NS, 2=BH
     double        remnantMass          = 0.0;
     double        kickVelocity         = 0.0;
+
+    // Campo magnético (disponible para cualquier cuerpo)
+    double        magneticFieldStrength = 0.0;  // Tesla en superficie ecuatorial; 0 = sin datos
+    float         magneticAxisTilt      = 0.0f; // grados entre eje magnetico y eje de rotacion
     // ────────────────────────────────────────────────────────
 
     // Estado interno
     double spin         = 0;
     double stellarAge   = 0;
+    double bodyAge      = 0.0;  // segundos desde creacion/spawn en la simulacion
     double fragAge      = 0;
     double intactMass   = 0;
     double tidalDamage  = 0;

@@ -314,8 +314,8 @@ struct InputState {
         if (IsKeyPressed(KEY_FOUR))         mode = MODE_LAUNCH;
         if (!ctrl && IsKeyPressed(KEY_F) && selectedBodyIdx >= 0) followSelected = !followSelected;
         if (IsKeyPressed(KEY_ESCAPE))     { selectedBodyIdx = -1; selectedBodyId = 0; followSelected = false; }
-        if (IsKeyPressed(KEY_RIGHT_BRACKET)) TIME_STEP = std::min(TIME_STEP*2.0, 1200.0*2048.0);
-        if (IsKeyPressed(KEY_LEFT_BRACKET))  TIME_STEP = std::max(TIME_STEP*0.5, 1200.0/1024.0);
+        if (IsKeyPressed(KEY_RIGHT_BRACKET)) TIME_STEP = std::min(TIME_STEP*2.0, 1200.0*32768.0);
+        if (IsKeyPressed(KEY_LEFT_BRACKET))  TIME_STEP = std::max(TIME_STEP*0.5, 1200.0/16384.0);
         if (IsKeyPressed(KEY_BACKSLASH))     TIME_STEP = 1200.0;
 
         bool del = IsKeyPressed(KEY_DELETE) || IsKeyPressed(KEY_BACKSPACE);

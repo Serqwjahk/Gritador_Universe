@@ -73,6 +73,15 @@ inline std::vector<CatalogItem> BuildCatalog() {
         // Distorsion espaciotiempo activada (ver blackhole_renderer.h).
         {"SGR 1806-20", 2.78e30, 12000.0, GetColor(0xff9955ff), true, 0.0f, {255,140,60,0}, MAT_GASEOUS},
 
+        // ── RX J1856.5-3754 — Estrella de neutrones aislada (INS/XINS) ─────
+        // La estrella de neutrones termica mas cercana conocida (~400 al).
+        // Tipo XINS (X-ray Isolated Neutron Star): radio-silenciosa, sin jets
+        // colimados ni actividad de magnetar. Campo magnetico moderado (~1.5e9 T),
+        // gira lentamente (T=7s) y se enfria por emision de cuerpo negro en
+        // rayos X. Observada con XMM-Newton y Chandra.
+        // Datos: Walter & Lattimer 2002 / Haberl 2007.
+        {"RX J1856.5-3754", 2.78e30, 12000.0, GetColor(0xaaddffff), true, 0.0f, {170,220,255,0}, MAT_GASEOUS},
+
         {"Jupiter",    1.898125e27,  69911000.0,    ORANGE,                  false, 0.35f,{200,150,100,0}, MAT_GASEOUS, 3.0f, 3.13f},
         {"Saturno",    5.68317e26,   58232000.0,    GetColor(0xe7d79bff),    false, 0.45f,{230,210,160,0}, MAT_GASEOUS, 3.0f, 26.73f},
         {"Urano",      8.68099e25,   25362000.0,    GetColor(0x9fd8ffff),    false, 0.40f,{184,240,240,0}, MAT_ICY, 3.0f, 97.77f},
@@ -168,7 +177,8 @@ inline std::vector<CatalogItem> BuildCatalog() {
               || item.name == "Betelgeuse" || item.name == "Stephenson 2-18"
               || item.name == "Sagitario A*"
               || item.name == "Pulsar de Cangrejo"
-              || item.name == "SGR 1806-20")
+              || item.name == "SGR 1806-20"
+              || item.name == "RX J1856.5-3754")
             item.category = BodyCategory::STAR;
         else if (item.name == "Luna" || item.name == "Io" || item.name == "Europa"
               || item.name == "Ganymede" || item.name == "Calisto" || item.name == "Titan"
@@ -526,6 +536,10 @@ inline Body SpawnFromCatalog(const CatalogItem& item, const std::string& baseNam
         b.supernovaProgress    = 0.0;
         b.supernovaRadius      = 0.0;
         b.stellarManualOverride = false;
+        // Estrellas que nacen ya en fase sin flares (raro en el catálogo, pero
+        // posible al forzar fase) no deben mostrar la animación de muerte al
+        // spawnear: arrancan con la reabsorción ya completada.
+        b.flareDeathProgress   = StarPhaseHasNoFlares(b.stellarPhase) ? 1.0f : 0.0f;
 
         // Metalicidad: Sol y estrellas reales catalogadas fijas en 0.014
         // (el JSON fuente no da metalicidad real para ellas; fijarla evita
@@ -603,11 +617,13 @@ inline Body SpawnFromCatalog(const CatalogItem& item, const std::string& baseNam
         b.compactRemnantType    = 1;
         b.effectiveSNThreshold  = 8.0;
         b.metallicityZ          = 0.014f;
-        b.stellarAge            = 969.0 * 3.156e7;
+        b.stellarAge            = 971.0 * 3.15576e7; // 971 anios desde SN 1054
         b.stellarPhaseAge       = 0.0;
-        b.axialTilt             = 62.0f;
+        b.axialTilt             = 62.0f;  // inclinacion del eje de rotacion
+        b.magneticFieldStrength = 3.8e8;  // 3.8e8 T en superficie ecuatorial
+        b.magneticAxisTilt      = 60.0f;  // angulo eje magnetico vs eje rotacion
         {
-            double periodSec  = 1.0 / 29.9;
+            double periodSec  = 0.0334;   // 1/29.9 daba 35880 vueltas exactas/paso → fmod=0
             double omega      = 2.0 * PI_D / periodSec;
             b.spinRateDeg     = (float)(omega * 1200.0 * (180.0 / PI_D));
         }
@@ -635,9 +651,11 @@ inline Body SpawnFromCatalog(const CatalogItem& item, const std::string& baseNam
         b.compactRemnantType    = 1;
         b.effectiveSNThreshold  = 8.0;
         b.metallicityZ          = 0.014f;
-        b.stellarAge            = 650.0 * 3.156e7; // ~650 anios
+        b.stellarAge            = 650.0 * 3.15576e7; // 650 anios
         b.stellarPhaseAge       = 0.0;
-        b.axialTilt             = 35.0f; // inclinacion observable del eje de rotacion
+        b.axialTilt             = 35.0f; // inclinacion del eje de rotacion
+        b.magneticFieldStrength = 2.0e11;  // 2e11 T (el mas intenso medido)
+        b.magneticAxisTilt      = 30.0f;   // angulo eje magnetico vs eje rotacion
         // Periodo de rotacion: 7.56 s (magnetar gira MUCHO mas lento que pulsar)
         // omega = 2*PI/7.56 = 0.831 rad/s
         // spinRateDeg = 0.831 * 1200 * (180/PI) = 57139
@@ -647,6 +665,40 @@ inline Body SpawnFromCatalog(const CatalogItem& item, const std::string& baseNam
             b.spinRateDeg    = (float)(omega * 1200.0 * (180.0 / PI_D));
         }
         b.color = GetColor(0xff9955ff); // naranja-blanco (mas caliente que Crab)
+    }
+
+    // ── RX J1856.5-3754 (Estrella de neutrones termica) ─────────────────────
+    if (baseName == "RX J1856.5-3754") {
+        b.stellarPhase          = StellarPhase::NEUTRON_STAR;
+        b.stellarManualOverride = true;  // no auto-evoluciona
+        b.isStar                = true;  // usa pipeline de estrella para render/iluminacion
+        b.isSupernovaRemnant    = false;
+        b.gravityEnabled        = true;
+        b.collisionEnabled      = true;
+        b.temperature           = 7.0e5;
+        b.luminosity            = 4.0 * PI_D * SIGMA * 12000.0 * 12000.0
+                                  * std::pow(7.0e5, 4.0);
+        b.baseLuminosity        = b.luminosity;
+        b.visualLuminosity      = b.luminosity;
+        b.stellarActivity       = 0.0f;  // sin llamaradas ni jets
+        b.initialStellarMass    = 10.0 * M_SUN;  // masa estimada del progenitor
+        b.remnantMass           = b.mass;
+        b.compactRemnantType    = 1;   // estrella de neutrones
+        b.effectiveSNThreshold  = 8.0;
+        b.metallicityZ          = 0.014f;
+        b.stellarAge            = 420000.0 * 3.15576e7;  // 420 000 años
+        b.stellarPhaseAge       = 0.0;
+        b.axialTilt             = 0.0f;  // desconocido; sin inclinacion axial asumida
+        b.magneticFieldStrength = 1.5e9;  // 1.5e9 T (moderado, ~3 ordenes bajo magnetar)
+        b.magneticAxisTilt      = 15.0f;  // 15 grados entre eje magnetico y rotacion
+        // Periodo de rotacion: 7.0 s  →  omega = 2π/7.0 = 0.8976 rad/s
+        // spinRateDeg = omega * 1200 * (180/π) ≈ 61 704 deg/1200s
+        {
+            double periodSec = 7.0;
+            double omega     = 2.0 * PI_D / periodSec;
+            b.spinRateDeg    = (float)(omega * 1200.0 * (180.0 / PI_D));
+        }
+        b.color = GetColor(0xaaddffff);  // azul-blanco frio (T = 7e5 K)
     }
 
     if (baseName == "Sagitario A*") {
@@ -741,6 +793,80 @@ inline Body SpawnFromCatalog(const CatalogItem& item, const std::string& baseNam
             double omega     = 2.0 * PI_D / periodSec;
             b.spinRateDeg = (float)(omega * 1200.0 * (180.0 / PI_D));
         }
+    }
+
+    // ── Edad real y campo magnético (AYUDA.json + datos compilados) ─────────
+    // bodyAge: edad del objeto en segundos desde su formacion. Para cuerpos
+    // catalogados se inicializa aqui con la edad real; para cuerpos nacidos
+    // por colision/eyeccion el campo queda en 0 (su valor por defecto).
+    // magneticFieldStrength: Tesla en superficie ecuatorial (0 = sin campo
+    // intrinseco global detectado o desconocido).
+    // Pulsar y Magnetar ya tienen estos campos asignados en sus bloques propios.
+    {
+        constexpr double GYR = 1.0e9 * 3.15576e7; // 1 Gyr en segundos
+
+        // Planetas principales
+        if      (baseName == "Mercurio") {
+            b.bodyAge = 4.56 * GYR;
+            b.magneticFieldStrength = 3.0e-7;  // ~300 nT (dinamo debil)
+            b.magneticAxisTilt      = 14.0f;
+        }
+        else if (baseName == "Venus") {
+            b.bodyAge = 4.56 * GYR;
+            // sin campo intrinseco global (viento solar induce campo externo)
+        }
+        else if (baseName == "Tierra") {
+            b.bodyAge = 4.54 * GYR;
+            b.magneticFieldStrength = 5.0e-5;  // ~50 µT ecuatorial (dinamo nucleo)
+            b.magneticAxisTilt      = 10.8f;
+        }
+        else if (baseName == "Marte") {
+            b.bodyAge = 4.56 * GYR;
+            // campos corticales remanentes locales, sin dinamo global activo
+        }
+        else if (baseName == "Jupiter") {
+            b.bodyAge = 4.59 * GYR;
+            b.magneticFieldStrength = 4.28e-4; // ~428 µT ecuatorial
+            b.magneticAxisTilt      = 9.6f;
+        }
+        else if (baseName == "Saturno") {
+            b.bodyAge = 4.59 * GYR;
+            b.magneticFieldStrength = 2.0e-5;  // ~20 µT (casi axisimetrico)
+            b.magneticAxisTilt      = 0.06f;
+        }
+        else if (baseName == "Urano") {
+            b.bodyAge = 4.59 * GYR;
+            b.magneticFieldStrength = 2.3e-5;  // ~23 µT (muy inclinado/descentrado)
+            b.magneticAxisTilt      = 59.0f;
+        }
+        else if (baseName == "Neptuno") {
+            b.bodyAge = 4.59 * GYR;
+            b.magneticFieldStrength = 1.4e-5;  // ~14 µT (muy inclinado/descentrado)
+            b.magneticAxisTilt      = 47.0f;
+        }
+        // Lunas
+        else if (baseName == "Luna")    { b.bodyAge = 4.51 * GYR; }
+        else if (baseName == "Io")      { b.bodyAge = 4.56 * GYR; }
+        else if (baseName == "Europa")  { b.bodyAge = 4.56 * GYR; }
+        else if (baseName == "Ganymede") {
+            b.bodyAge = 4.56 * GYR;
+            b.magneticFieldStrength = 7.5e-7;  // ~750 nT (unica luna con dinamo propio)
+        }
+        else if (baseName == "Calisto") { b.bodyAge = 4.56 * GYR; }
+        else if (baseName == "Titan")   { b.bodyAge = 4.56 * GYR; }
+        else if (baseName == "Triton")  { b.bodyAge = 4.50 * GYR; }
+        else if (baseName == "Caronte") { b.bodyAge = 4.50 * GYR; }
+        // Cinturon principal
+        else if (baseName == "Ceres")   { b.bodyAge = 4.56 * GYR; }
+        // Planetas enanos / TNOs
+        else if (baseName == "Pluton")   { b.bodyAge = 4.50 * GYR; }
+        else if (baseName == "Haumea")   { b.bodyAge = 4.50 * GYR; }
+        else if (baseName == "Makemake") { b.bodyAge = 4.50 * GYR; }
+        else if (baseName == "Eris")     { b.bodyAge = 4.50 * GYR; }
+        else if (baseName == "Orcus")    { b.bodyAge = 4.50 * GYR; }
+        else if (baseName == "Quaoar")   { b.bodyAge = 4.50 * GYR; }
+        else if (baseName == "Gonggong") { b.bodyAge = 4.50 * GYR; }
+        else if (baseName == "Sedna")    { b.bodyAge = 4.50 * GYR; }
     }
 
     // Gigantes gaseosos/helados y planetas rocosos/helados: perfiles

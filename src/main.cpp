@@ -27,6 +27,7 @@
 #include "camera_input.h"
 #include "blackhole_renderer.h"
 #include "pulsar_renderer.h"
+#include "preview_renderer.h"
 
 // GUI (Dear ImGui + rlImGui)
 #include "imgui.h"
@@ -140,6 +141,7 @@ static void UpdateBodiesState(std::vector<Body>& bodies,
         if (!b.isSupernovaRemnant && b.mass > 0.0 && b.criticalRotationFraction > 0.0f)
             ApplyRotationalBreakup(b, dust, TIME_STEP);
 
+        b.bodyAge += TIME_STEP;
         if (b.heatSpike > 0.0f) b.heatSpike = std::max(0.0f, b.heatSpike - 0.008f);
         // Periodo de wrap = 2*PI*20 / (0.0008 * 0.04). Elegido para que el
         // "salto" de spinPhase al reiniciarse equivalga a un giro de
@@ -147,7 +149,9 @@ static void UpdateBodiesState(std::vector<Body>& bodies,
         // -2*PI en la fase de evolucion del ruido (spinPhase*0.0000016) del
         // shader de gigantes gaseosos -> ningun "clip" visible, ni en la
         // rotacion ni en la animacion de nubes/bandas.
-        b.spin = std::fmod(b.spin + TIME_STEP * 0.015, 3926990.8125);
+        // Periodo 1e9 evita el reset visible de llamaradas (anterior 3.9e6
+        // causaba un salto de spinPhase a 0 cada ~1700 frames a x128).
+        b.spin = std::fmod(b.spin + TIME_STEP * 0.015, 1.0e9);
 
         // Actualizar trayectoria segun tamano fisico (no etiqueta): un
         // fragmento masivo resultante de un cataclismo es tan relevante
@@ -370,6 +374,9 @@ int main() {
     // completamente inicializado antes de crear los FBOs y shaders.
     GetBlackholeRenderer().Init(windowWidth, windowHeight);
 
+    // ── Preview isometrico 3D (catalogo + inspector) ──
+    GetPreviewRenderer().Init();
+
     // ── Recursos gráficos ──
     TextureStore texStore;
     texStore.Load();
@@ -412,6 +419,16 @@ int main() {
     Model puffModel = LoadModelFromMesh(puffMesh);
     puffModel.materials[0].shader = flareShader;
 
+    // ── Shader volumétrico de supernova (raymarch esférico) ──
+    Shader supernovaShader = LoadShaderFromMemory(SUPERNOVA_VERT_SRC, SUPERNOVA_FRAG_SRC);
+    supernovaShader.locs[SHADER_LOC_VERTEX_POSITION] = GetShaderLocationAttrib(supernovaShader, "vertexPosition");
+    supernovaShader.locs[SHADER_LOC_MATRIX_MVP]      = GetShaderLocation(supernovaShader, "mvp");
+    supernovaShader.locs[SHADER_LOC_MATRIX_MODEL]    = GetShaderLocation(supernovaShader, "matModel");
+    SupernovaShaderLocs snLocs = GetSupernovaShaderLocs(supernovaShader);
+    // Cubo unidad [-1,1] que acota la esfera de la explosión (se escala por radio).
+    Model snCubeModel = LoadModelFromMesh(GenMeshCube(2.0f, 2.0f, 2.0f));
+    snCubeModel.materials[0].shader = supernovaShader;
+
     // ── Escombros 3D instanciados (campo de polvo/anillos) ──
     Shader rockShader = LoadShaderFromMemory(ROCK_INSTANCE_VERT_SRC, ROCK_INSTANCE_FRAG_SRC);
     RockShaderLocs rkLocs = GetRockShaderLocs(rockShader);
@@ -443,6 +460,21 @@ int main() {
     // Para doble-click de selección
     float lastClickTime  = -1.0f;
     int   lastClickBody  = -1;
+
+    // ── Pre-render de miniaturas del catálogo (una vez, antes del loop) ──
+    // Cada CatalogItem obtiene su propio RenderTexture2D de THUMB_SIZE×THUMB_SIZE
+    // usando SpawnFromCatalog para preservar texturas y shaders reales.
+    GetCatalogCache().RenderAll(Database, planetModel, tex, lightingShader, sLocs);
+
+    // Índices de items con apariencia aleatoria que se re-renderizan cada ~1.5s
+    int randomGasGiantIdx  = -1;
+    int randomRockyIdx     = -1;
+    for (int i = 0; i < (int)Database.size(); ++i) {
+        if (Database[(size_t)i].name == "Gigante Procedural") randomGasGiantIdx = i;
+        if (Database[(size_t)i].name == "Planeta Rocoso")     randomRockyIdx    = i;
+    }
+    float randomPreviewTimer = 0.0f;
+    constexpr float RANDOM_PREVIEW_INTERVAL = 1.5f; // segundos reales
 
     // ── Bucle principal ──────────────────────────────────────
     while (!WindowShouldClose()) {
@@ -536,7 +568,59 @@ int main() {
             // real -- aparecen y desaparecen "de la nada" en vez de animarse. Un
             // tope de aceleracion (sin tope de frenado) evita el flash sin perder el
             // frenado correcto en cámara lenta.
-            g_flareClock += GetFrameTime() * std::min(4.0, TIME_STEP / 1200.0);
+            float flareDelta = GetFrameTime() * (float)std::min(4.0, TIME_STEP / 1200.0);
+            g_flareClock += flareDelta;
+
+            // Reabsorción de llamaradas al morir la estrella. Cuando entra en una
+            // fase sin flares (supernova, enana blanca, remanente compacto), las
+            // llamaradas vivas ejecutan su animación de muerte a lo largo de este
+            // ramp (~1.2s del reloj de flares) en vez de desaparecer de golpe.
+            // Se conduce con el mismo delta que g_flareClock para que el tempo de
+            // la reabsorción coincida con el de la animación de las propias flares.
+            {
+                const float DEATH_DUR = 1.5f; // segundos reales (fases sin colapso físico)
+                for (auto& b : bodies) {
+                    if (!b.isStar) continue;
+                    if (StarPhaseHasNoFlares(b.stellarPhase)) {
+                        // Muriendo: NO se actualizan flareDeathClock/Temp -- quedan
+                        // CONGELADOS en el último valor de cuando la estrella estaba
+                        // viva (refrescados cada frame en la rama 'else'). Así:
+                        //  · el ciclo de vida no avanza (no nacen flares nuevas), y
+                        //  · el 'period' queda fijo con la temperatura REAL de la
+                        //    supergigante (~4000K), no la alterada por el pico
+                        //    térmico de la SN -- las flares moribundas conservan el
+                        //    carácter (frecuencia/tamaño) que tenían justo antes de
+                        //    explotar, y no saltan/parpadean. Ver DrawStarFlares.
+                        if (b.stellarPhase == StellarPhase::SUPERNOVA) {
+                            // Reabsorción ACOPLADA al colapso pero MÁS RÁPIDA que
+                            // éste: el radio se comprime del todo en supernovaProgress
+                            // 0→0.05 (stellar_evolution.h), pero las flares se
+                            // reabsorben en 0→0.015 (≈30% del colapso), así
+                            // desaparecen bastante antes de que la estrella termine
+                            // de comprimirse. A cualquier velocidad de simulación.
+                            float col = (float)std::min(1.0, b.supernovaProgress / 0.015);
+                            // Piso 1e-3: congela el ciclo desde el primer frame sin
+                            // encoger todavía (deathMul≈1) aunque el colapso aún sea 0.
+                            b.flareDeathProgress = std::max(b.flareDeathProgress,
+                                                            std::max(col, 1e-3f));
+                        } else {
+                            // Enana blanca/negra y remanentes: sin evento de colapso
+                            // continuo, se usa un ramp por tiempo REAL (no sim) para
+                            // que la reabsorción sea siempre suave y no se congele a
+                            // velocidades de simulación bajas.
+                            b.flareDeathProgress = std::min(1.0f,
+                                b.flareDeathProgress + GetFrameTime() / DEATH_DUR);
+                        }
+                    } else {
+                        // Viva (o rejuvenecida): flares activas. Refrescar los
+                        // snapshots cada frame -- en el instante en que la estrella
+                        // muera, quedarán congelados en estos últimos valores vivos.
+                        b.flareDeathProgress = 0.0f;
+                        b.flareDeathClock    = (float)g_flareClock;
+                        b.flareDeathTemp     = (float)b.temperature;
+                    }
+                }
+            }
 
             // Re-resolver la seleccion por ID estable: StepPhysics puede
             // haber borrado cuerpos (fusiones, supernovas, limpieza de
@@ -723,6 +807,11 @@ int main() {
             if (bodies[i].isStar)
                 DrawMagnetarEffect(bodies[i], flareShader, fLocs, archModel, jetModel);
 
+        // Supernovas: raymarch volumétrico (nube de explosión con filamentos).
+        for (int i = 0; i < (int)bodies.size(); ++i)
+            if (bodies[i].stellarPhase == StellarPhase::SUPERNOVA)
+                DrawSupernova(bodies[i], orbitCam.cam, supernovaShader, snLocs, snCubeModel);
+
 
         // Campo de escombros 3D: rocas low-poly instanciadas (un draw call)
         DrawDustField3D(dustField, bodies, rockMesh, rockMaterial, rkLocs, orbitCam.cam);
@@ -745,6 +834,22 @@ int main() {
         // texto 2D, debe ir DESPUES de EndMode3D(). No se distorsionan.
         DrawBodyNameLabels(bodies, orbitCam.cam);
 
+
+        // ── Preview isometrico 3D del inspector: render a textura ANTES de Dear ImGui ──
+        // (rlImGui no acepta BeginTextureMode dentro de su frame).
+        // Las miniaturas del catálogo se pre-renderizan en RenderAll (arriba, pre-loop).
+        if (input.selectedBodyIdx >= 0 && input.selectedBodyIdx < (int)bodies.size())
+            GetPreviewRenderer().RenderInspector(bodies[(size_t)input.selectedBodyIdx],
+                                                  planetModel, *tex.blank,
+                                                  lightingShader, sLocs);
+
+        // Re-render periódico de miniaturas aleatorias (Gigante Procedural, Planeta Rocoso)
+        randomPreviewTimer += GetFrameTime();
+        if (randomPreviewTimer >= RANDOM_PREVIEW_INTERVAL) {
+            randomPreviewTimer = 0.0f;
+            if (randomGasGiantIdx >= 0) GetCatalogCache().RerenderEntry(randomGasGiantIdx);
+            if (randomRockyIdx    >= 0) GetCatalogCache().RerenderEntry(randomRockyIdx);
+        }
 
         // UI (Dear ImGui / rlImGui)
         rlImGuiBegin();
@@ -795,12 +900,16 @@ int main() {
     }
 
     // ── Limpieza ──
+    GetPreviewRenderer().Unload();
+    GetCatalogCache().Unload();
     GetPulsarRenderer().Unload();
     GetBlackholeRenderer().Unload();
     UnloadModel(archModel);
     UnloadModel(jetModel);
     UnloadModel(puffModel);
     UnloadShader(flareShader);
+    UnloadModel(snCubeModel);
+    UnloadShader(supernovaShader);
     UnloadMaterial(rockMaterial);
     UnloadMesh(rockMesh);
     UnloadTexture(skyboxTex);

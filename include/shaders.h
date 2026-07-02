@@ -15,8 +15,10 @@ out vec2 fragTexCoord;
 uniform mat4 mvp;
 uniform mat4 matModel;
 uniform mat4 matNormal;
-uniform float uSeed;       // semilla procedural (rpSeed, ver renderer.h)
-uniform float uPotatoAmp;  // amplitud de deformacion "papa" (0 = sin cambio)
+uniform float uSeed;           // semilla procedural (rpSeed, ver renderer.h)
+uniform float uPotatoAmp;      // amplitud de deformacion "papa" (0 = sin cambio)
+uniform float uInstabilityAmp; // deformacion convectiva de gigantes (0 = ninguna)
+uniform float uInstabilityTime;// fase lenta de animacion de celdas convectivas
 
 // Copia de hash/noise/fbm3 (FRAGMENT_SHADER_SRC) -- cada stage de shader
 // necesita su propia copia de cualquier funcion que use, GLSL no comparte
@@ -51,6 +53,26 @@ const float POTATO_FREQ = 2.0;
 
 float potatoDisp(vec3 dir) {
     return (fbm3(dir * POTATO_FREQ + uSeed) * 2.0 - 1.0) * uPotatoAmp;
+}
+
+// Deformacion estructural 3D para gigantes/supergigantes: simula celdas
+// convectivas masivas, protuberancias y hundimientos del plasma.
+// Tres capas de escala espacial + deriva global asimetrica muy lenta.
+// Retorna desplazamiento radial normalizado en [-amp, amp].
+float stellarInstability(vec3 dir, float amp, float t) {
+    // Celdas grandes: 1-2 estructuras convectivas gigantescas por hemisferio
+    float cL = fbm3(dir * 1.1  + vec3(t * 0.44, t * 0.32, 1.7)) * 2.0 - 1.0;
+    // Celdas medias: hervir del plasma (4-6 celdas visibles)
+    float cM = (fbm3(dir * 2.9  + vec3(3.1, t * 0.92, t * 0.68)) * 2.0 - 1.0) * 0.45;
+    // Deriva global: asimetria entre hemisferios que migra muy lentamente
+    vec3 drift = vec3(sin(t * 0.124 + 0.5) * 0.25,
+                      cos(t * 0.108)        * 0.20,
+                      sin(t * 0.076 + 1.3)  * 0.18);
+    float cD = (fbm3(dir * 0.72 + drift) * 2.0 - 1.0) * 0.55;
+    // Micro-turbulencia: pequenas protuberancias de corta vida
+    float cF = (fbm3(dir * 6.3  + vec3(t * 1.88, 5.3, t * 1.56)) * 2.0 - 1.0) * 0.18;
+    // Suma normalizada (max teorico ~2.18, factor 0.46 ~ 1/2.18)
+    return clamp((cL + cM + cD + cF) * 0.46, -1.0, 1.0) * amp;
 }
 
 void main() {
@@ -89,8 +111,33 @@ void main() {
         fragNormal   = normalize(vec3(matNormal * vec4(Nlocal, 0.0)));
         fragPosition = vec3(matModel * vec4(displacedPos, 1.0));
         gl_Position  = mvp * vec4(displacedPos, 1.0);
+    } else if (uInstabilityAmp > 0.0001) {
+        // Gigantes/supergigantes: desplazamiento radial por inestabilidad
+        // estructural (celdas convectivas masivas, perdida de masa, turbulencia).
+        float disp = stellarInstability(dir, uInstabilityAmp, uInstabilityTime);
+        vec3  pp   = vertexPosition * (1.0 + disp);
+
+        // Perturbar la normal mediante diferencias finitas tangenciales para
+        // que la iluminacion refleje la curvatura real de la superficie deformada
+        // (mismo metodo que potatoDisp usa con T/B arriba).
+        vec3 upRef = vec3(0.0, 1.0, 0.0);
+        vec3 Tc = cross(upRef, dir);
+        if (dot(Tc, Tc) < 1e-4) Tc = cross(vec3(1.0, 0.0, 0.0), dir);
+        vec3 T = normalize(Tc);
+        vec3 B = cross(dir, T);
+        const float INST_EPS   = 0.007;
+        const float INST_SCALE = 7.5;
+        vec3  pT = normalize(dir + T * INST_EPS);
+        vec3  pB = normalize(dir + B * INST_EPS);
+        float dT = stellarInstability(pT, uInstabilityAmp, uInstabilityTime) - disp;
+        float dB = stellarInstability(pB, uInstabilityAmp, uInstabilityTime) - disp;
+        vec3 Nlocal = normalize(dir - (T * dT + B * dB) * INST_SCALE);
+
+        fragNormal   = normalize(vec3(matNormal * vec4(Nlocal, 0.0)));
+        fragPosition = vec3(matModel * vec4(pp, 1.0));
+        gl_Position  = mvp * vec4(pp, 1.0);
     } else {
-        // uPotatoAmp==0 (planetas): identico al shader original.
+        // Sin deformacion (planetas, secuencia principal): paso directo.
         fragNormal   = N0;
         fragPosition = vec3(matModel * vec4(vertexPosition, 1.0));
         gl_Position  = mvp * vec4(vertexPosition, 1.0);
@@ -271,6 +318,9 @@ uniform float isGiantPhase;        // 1.0 si SUBGIANT/RED_GIANT/SUPERGIANT
 uniform float isSupernovaPhase;    // 1.0 durante SUPERNOVA activa
 uniform float supernovaProgress;   // 0→1 durante SUPERNOVA
 uniform float rotationCriticality; // 0-1: fracción de velocidad de ruptura rotacional
+// Inestabilidad estructural: celdas convectivas en gigantes/supergigantes
+uniform float uInstabilityAmp;     // 0=sin efecto, >0=deformacion activa
+uniform float uInstabilityTime;    // fase lenta de animacion de celdas convectivas
 
 // ============================================================
 //  GIGANTE GASEOSO PROCEDURAL — perfil atmosferico
@@ -1139,7 +1189,11 @@ void drawStar() {
     surfColor += blackBodyColor(min(40000.0, temp * 1.4)) * cScale * rim;
 
     // ─── PROMINENCIAS Y ERUPCIONES: M = frecuentes/grandes; G/K = raras ───
-    if (sp.activity > 0.015 && temp < 33000.0) {
+    // Suprimidas durante la SUPERNOVA: la estrella está implosionando a objeto
+    // compacto, no hay cromosfera que sostenga prominencias. Además 'ts' depende
+    // del spin (tiempo de simulación) y a velocidad baja se congelaría, dejando
+    // prominencias estáticas sobre la superficie en colapso.
+    if (sp.activity > 0.015 && temp < 33000.0 && isSupernovaPhase < 0.5) {
         float limbZone = invSmooth(0.38, 0.0, mu);
 
         float pA = atan(sN.z, sN.x);
@@ -1197,6 +1251,27 @@ void drawStar() {
         surfColor = mix(surfColor, blackBodyColor(max(temp - 500.0, 2000.0)), isGiantPhase * 0.12);
     }
 
+    // ─── INESTABILIDAD ESTRUCTURAL: CELDAS CONVECTIVAS MASIVAS ───────────
+    // Las zonas de ascenso (upwellings) son mas calientes y brillantes;
+    // las de descenso (downdrafts) mas frias y tenues. Las celdas se animan
+    // con el mismo uInstabilityTime que el vertex shader, para que la
+    // variacion de color este alineada visualmente con las deformaciones 3D.
+    if (uInstabilityAmp > 0.01) {
+        float ti = uInstabilityTime;
+        // Celda de conveccion a misma escala que el vertex shader (cL)
+        float upCell = fbm3(rN * 1.05 + vec3(ti * 0.44, ti * 0.32, 1.7)) * 2.0 - 1.0;
+        // Modulacion de detalle para romper uniformidad dentro de cada celda
+        float detail = fbm3(rN * 3.1  + vec3(1.8, ti * 0.84, ti * 0.60)) * 2.0 - 1.0;
+        float convMask = clamp(upCell * 0.72 + detail * 0.28, -1.0, 1.0);
+        // Upwelling (+): brillo y temperatura; downdraft (-): dimmer y mas rojo
+        float brightMod = convMask * uInstabilityAmp * 3.0;
+        surfColor *= (1.0 + clamp(brightMod, -0.25, 0.42));
+        // Tinte rojizo/frio en los descensos convectivos
+        float coolBias = clamp(-convMask * uInstabilityAmp * 2.3, 0.0, 0.34);
+        surfColor.r *= (1.0 + coolBias * 0.12);
+        surfColor.b *= (1.0 - coolBias * 0.22);
+    }
+
     // Gravity darkening: polos calientes, ecuador frío (rotación rápida)
     // Von Zeipel (1924): T ∝ g_eff^0.25, donde g_eff = g - Ω²r en ecuador
     if (rotationCriticality > 0.05) {
@@ -1209,11 +1284,17 @@ void drawStar() {
         surfColor = surfColor * tFactor;
     }
 
-    // Supernova activa: override hacia blanco-azul intenso
-    if (isSupernovaPhase > 0.5 && supernovaProgress < 0.5) {
-        float snIntensity = supernovaProgress * 2.0; // 0→1 en la primera mitad
-        vec3 snColor      = vec3(2.5, 2.5, 3.5) * (1.0 - snIntensity * 0.3);
-        surfColor         = mix(surfColor, snColor, snIntensity * 0.85);
+    // Supernova activa: flash azul-blanco que sigue la curva de luz real.
+    // snPeak sube 0→1 en el primer 8% del progreso (coincide con el pico de
+    // SupernovaLightCurve); snDecay cae exponencialmente después del pico.
+    // El snIntensity anterior (progress*2, solo en primera mitad) era demasiado
+    // sutil y llegaba tarde: a progress=0.08 (maximo brillo) solo mezclaba 13%.
+    if (isSupernovaPhase > 0.5) {
+        float snPeak   = clamp(supernovaProgress / 0.08, 0.0, 1.0);
+        float snDecay  = exp(-5.0 * max(0.0, supernovaProgress - 0.08));
+        float snFactor = snPeak * snDecay;
+        vec3  snColor  = vec3(4.0, 4.2, 6.5); // azul-blanco intenso
+        surfColor      = mix(surfColor, snColor, snFactor * 0.95);
     }
 
     // ─── TONEMAPPING FILMIC EN LUMINANCIA + GAMMA ───────────────
@@ -2982,6 +3063,240 @@ void main() {
 
     if (alpha < 0.010) discard;
     finalColor = vec4(col, alpha);
+}
+)GLSL";
+
+// ============================================================
+//  Shader de SUPERNOVA — raymarcher volumétrico
+//  Adaptado del shader de nube volumétrica de Godot (box raymarch con
+//  volume texture) a un raymarch ESFÉRICO con ruido FBM PROCEDURAL, para
+//  no depender de texturas 3D (que raylib no maneja bien). Se dibuja sobre
+//  un cubo que acota la esfera de la explosión; el fragment traza un rayo
+//  desde la cámara, interseca la esfera analíticamente y acumula emisión
+//  volumétrica (filamentos por domain-warp FBM) con una paleta de color que
+//  depende del progenitor. Ver DrawSupernova (renderer.h).
+// ============================================================
+static const char* SUPERNOVA_VERT_SRC = R"GLSL(
+#version 330
+in vec3 vertexPosition;
+uniform mat4 mvp;
+uniform mat4 matModel;
+out vec3 vWorld;
+void main() {
+    vWorld      = (matModel * vec4(vertexPosition, 1.0)).xyz;
+    gl_Position = mvp * vec4(vertexPosition, 1.0);
+}
+)GLSL";
+
+static const char* SUPERNOVA_FRAG_SRC = R"GLSL(
+#version 330
+in  vec3 vWorld;
+out vec4 finalColor;
+
+uniform vec3  uCamPos;      // cámara en espacio de dibujo
+uniform vec3  uCenter;      // centro de la explosión
+uniform float uRadius;      // radio de la esfera acotante (draw units)
+uniform float uTime;        // reloj de animación (tiempo simulado escalado)
+uniform float uProgress;    // 0→1 avance de la supernova
+uniform float uBrightness;  // brillo global (curva de luz + glow base)
+uniform float uOpacity;     // presencia/desvanecimiento (0=invisible, 1=pleno)
+uniform float uSeed;        // variación por estrella
+uniform vec3  uColorCore;   // núcleo caliente
+uniform vec3  uColorMid;    // capa media
+uniform vec3  uColorEdge;   // filamentos externos fríos
+
+float h3(vec3 p){ return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
+float vnoise(vec3 p){
+    vec3 i = floor(p), f = fract(p);
+    f = f*f*(3.0 - 2.0*f);
+    float n000=h3(i), n100=h3(i+vec3(1,0,0));
+    float n010=h3(i+vec3(0,1,0)), n110=h3(i+vec3(1,1,0));
+    float n001=h3(i+vec3(0,0,1)), n101=h3(i+vec3(1,0,1));
+    float n011=h3(i+vec3(0,1,1)), n111=h3(i+vec3(1,1,1));
+    return mix(mix(mix(n000,n100,f.x), mix(n010,n110,f.x), f.y),
+               mix(mix(n001,n101,f.x), mix(n011,n111,f.x), f.y), f.z);
+}
+float fbm(vec3 p){
+    float v = 0.0, a = 0.5;
+    for (int i = 0; i < 5; i++){ v += a*vnoise(p); p = p*2.02 + vec3(1.7, 9.2, 3.3); a *= 0.5; }
+    return v;
+}
+// FBM ligero (3 octavas) para deformaciones direccionales baratas.
+float fbm3(vec3 p){
+    float v = 0.0, a = 0.5;
+    for (int i = 0; i < 3; i++){ v += a*vnoise(p); p = p*2.03 + vec3(1.7); a *= 0.5; }
+    return v;
+}
+
+// Intersección rayo-esfera centrada en origen. x=entrada, y=salida (y<x => miss)
+vec2 hitSphere(vec3 ro, vec3 rd, float rad){
+    float b = dot(ro, rd);
+    float c = dot(ro, ro) - rad*rad;
+    float d = b*b - c;
+    if (d < 0.0) return vec2(1.0, -1.0);
+    float s = sqrt(d);
+    return vec2(-b - s, -b + s);
+}
+
+// Densidad volumétrica en coord local q (esfera unitaria), r=|q|
+float density(vec3 q, float r){
+    vec3 dir = q / max(r, 1e-4);
+
+    // ── Romper FUERTE la simetría esférica ──
+    // El radio del cascarón se DESPLAZA según la dirección con ruido a 3 escalas:
+    // la superficie deja de ser esfera y se vuelve muy grumosa/lobulada, con
+    // protuberancias que sobresalen (como los remanentes reales, nada regular).
+    float lump  = fbm3(dir*1.5  + vec3(uSeed*3.0))        - 0.5;   // lóbulos grandes
+    float lump2 = fbm3(dir*3.3  + vec3(uSeed*1.7 + 11.0)) - 0.5;   // grumos medios
+    float lump3 = fbm3(dir*6.5  + vec3(uSeed*0.9 + 23.0)) - 0.5;   // detalle fino
+    float shellC = mix(0.05, 0.66, smoothstep(0.0, 1.0, uProgress));
+    shellC += lump*0.60 + lump2*0.32 + lump3*0.16;                 // deformación fuerte
+
+    // Grosor del cascarón muy variable por dirección (zonas gruesas y huecas).
+    float sigma = mix(0.50, 0.18, smoothstep(0.0, 1.0, uProgress));
+    sigma *= 0.40 + fbm3(dir*2.5 + vec3(uSeed))*1.4;
+    float shell = exp(-((r - shellC)*(r - shellC)) / (2.0*sigma*sigma));
+
+    // Rayos/ejecta radiales MUY marcados (chorros que apuntan hacia afuera).
+    float rays = fbm3(dir*8.0 + vec3(uSeed*2.3));
+    rays = pow(clamp(rays, 0.0, 1.0), 4.0) * 3.0;
+
+    // Filamentos finos con domain warp FUERTE (aspecto fibroso/turbulento).
+    vec3 base = q*2.2 + vec3(uSeed);
+    vec3 flow = vec3(0.0, uTime*0.06, uTime*0.03);
+    vec3 warp = vec3(fbm3(base + flow),
+                     fbm3(base + vec3(5.2,1.3,8.7) - flow),
+                     fbm3(base + vec3(2.9,7.1,4.4)));
+    float fil = fbm(q*6.5 + warp*3.6 + vec3(uSeed*1.7) + flow*0.5);
+    fil = pow(clamp(fil, 0.0, 1.0), 1.8);
+
+    // ── Relleno interior turbulento ──
+    // Sin esto el interior (r < shellC) queda casi vacío/liso y el núcleo se ve
+    // como una bola redonda. Añade nubes/wisps turbulentos hacia el centro,
+    // deformados por su propio ruido, para que el interior tenga estructura
+    // irregular (no una esfera).
+    float interiorMask = smoothstep(shellC + sigma*1.6, 0.0, r);   // fuerte hacia el centro
+    float interiorFil  = fbm(q*4.2 + warp*2.4 + vec3(uSeed*4.3 + 17.0));
+    interiorFil = pow(clamp(interiorFil, 0.0, 1.0), 1.6);
+    float interior = interiorMask * interiorFil * 0.75;
+
+    // Filamentos base + ejecta radial acentuada + relleno interior.
+    float d = shell * (fil + fil*rays*0.9) + interior;
+    d *= smoothstep(1.28, 0.55, r); // deja que los lóbulos sobresalgan mucho más
+    return d;
+}
+
+vec3 palette(float t){
+    t = clamp(t, 0.0, 1.0);
+    vec3 c = mix(uColorEdge, uColorMid, smoothstep(0.0, 0.55, t));
+    c      = mix(c, uColorCore, smoothstep(0.55, 1.0, t));
+    return c;
+}
+
+void main(){
+    vec3 ro = uCamPos - uCenter;            // origen relativo al centro
+    vec3 rd = normalize(vWorld - uCamPos);
+    // Esfera de marcha 1.4× mayor que uRadius: los lóbulos deformados llegan
+    // hasta r~1.2 (normalizado), así que la esfera acotante debe ir más allá de
+    // r=1 o los cortaría planos (volviendo a verse esférico en el borde).
+    vec2 tt = hitSphere(ro, rd, uRadius * 1.4);
+    if (tt.y < tt.x) discard;
+
+    float t0 = max(tt.x, 0.0);
+    float t1 = tt.y;
+    const int STEPS = 56;
+    float dt = (t1 - t0) / float(STEPS);
+    // Jitter por-fragmento del primer paso: dispersa las posiciones de muestreo
+    // para que detalles finos (anillo/frente de choque delgados, más finos que
+    // dt) se rendericen suaves en vez de entrecortados, sin subir STEPS.
+    float jitter = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
+    float t  = t0 + dt*jitter;
+
+    vec3  col = vec3(0.0);
+    float transmittance = 1.0;
+
+    // Progreso LOCAL de la explosión: 0 en la emergencia (uProgress 0.045) → 1 al
+    // final. Se usa para que el frente de choque y el anillo arranquen DESDE EL
+    // CENTRO (núcleo de la estrella) en vez de aparecer ya afuera -- con uProgress
+    // directo, pow(0.045,exp) ya daba un radio grande al emerger.
+    float blastProg = clamp((uProgress - 0.045) / 0.955, 0.0, 1.0);
+
+    // Frente de choque: cascarón MUY delgado y brillante que corre hacia afuera
+    // (blast wave de la implosión nuclear). Nace en el centro y revienta afuera.
+    float shockFront = mix(0.03, 1.05, pow(blastProg, 0.5));
+    float shockInt   = (1.0 - smoothstep(0.0, 0.55, uProgress)); // fuerte al inicio
+
+    // ── Anillo de onda expansiva 3D (blast ring) ──
+    // Disco delgado toroidal que se expande en un plano, perpendicular a un eje
+    // determinista por estrella (uSeed). Es el "anillo de choque" característico
+    // (tipo SN 1987A / anillo sci-fi) que revienta hacia afuera y se disipa.
+    // Arranca desde el centro (ringR~0) y se expande rápido.
+    vec3 ringAxis = normalize(vec3(sin(uSeed*12.9 + 0.3),
+                                   cos(uSeed*7.3),
+                                   sin(uSeed*4.1 + 1.0)));
+    float ringR   = mix(0.02, 1.28, pow(blastProg, 0.4));      // nace en el núcleo, expande rápido
+    float ringInt = (1.0 - smoothstep(0.05, 0.80, uProgress));  // fuerte al inicio, se disipa
+
+    for (int i = 0; i < STEPS; i++){
+        vec3 pos = ro + rd*t;
+        vec3 q   = pos / uRadius;
+        float r  = length(q);
+        float dens = density(q, r);
+
+        // Contribución del frente de choque (rim delgado brillante).
+        float shockGlow = exp(-((r - shockFront)*(r - shockFront)) / (2.0*0.055*0.055));
+        dens += shockGlow * shockInt * 0.9;
+
+        // Contribución del anillo (toro delgado en el plano perpendicular al eje).
+        float hAx     = dot(q, ringAxis);                 // distancia fuera del plano
+        float rInPl   = length(q - ringAxis*hAx);         // radio dentro del plano
+        float ringRad = exp(-((rInPl - ringR)*(rInPl - ringR)) / (2.0*0.03*0.03)); // más delgado (radial)
+        float ringDsk = exp(-(hAx*hAx) / (2.0*0.045*0.045)); // disco más delgado (fuera del plano)
+        // Irregularidad azimutal del anillo (grumoso, no un toro perfecto).
+        vec3  dir     = q / max(r, 1e-4);
+        float ringMod = 0.5 + fbm3(dir*5.0 + vec3(uSeed*3.7))*1.1;
+        float ring    = ringRad * ringDsk * ringMod;
+        dens += ring * ringInt * 1.2;
+
+        if (dens > 0.002){
+            // Radio TÉRMICO deformado: sin esto el núcleo caliente (color core,
+            // azul) es función pura de r → una esfera perfecta. Se perturba con
+            // ruido posicional + direccional para romper esa esfericidad y darle
+            // grumos/lóbulos irregulares al interior.
+            float coreWarp = (fbm(q*3.0 + vec3(uSeed*2.0) + vec3(0.0, uTime*0.04, 0.0)) - 0.5) * 0.60
+                           + (fbm3(dir*2.2 + vec3(uSeed*5.1)) - 0.5) * 0.45;
+            float rHeat = clamp(r + coreWarp, 0.0, 2.0);
+            float heat = clamp(1.0 - rHeat*1.15, 0.0, 1.0);   // núcleo caliente (deformado)
+            float ct   = heat*0.65 + dens*0.35;
+            vec3 emit  = palette(ct);
+            // Destello de núcleo al inicio (implosión → bola de fuego).
+            emit += uColorCore * heat*heat * (1.0 - uProgress) * 1.8;
+            // El frente de choque emite un tono cálido (no blanco puro, para no
+            // saturar) de intensidad moderada.
+            emit += mix(uColorMid, uColorCore, 0.55) * shockGlow * shockInt * 2.0;
+            // El anillo emite un tono cálido (mezcla núcleo/medio), brillo moderado.
+            emit += mix(uColorMid, uColorCore, 0.55) * ring * ringInt * 3.5;
+            // Profundidad óptica NORMALIZADA por el radio: sin dividir por uRadius,
+            // 'dt' (en unidades de dibujo absolutas) hace que la acumulación
+            // dependa del tamaño absoluto de la explosión (de miles a cientos de
+            // miles de unidades) y sature -> bola sólida. Normalizada, la
+            // translucidez volumétrica es igual a cualquier escala.
+            // uOpacity escala la profundidad óptica: col y alpha (1-transmittance)
+            // se desvanecen JUNTOS, evitando que quede una esfera oscura al bajar
+            // solo el brillo (blending premultiplicado).
+            float dd = dens * (dt / uRadius) * 9.0 * uOpacity;
+            col += emit * dd * transmittance;
+            transmittance *= exp(-dd * 1.5);
+            if (transmittance < 0.01) break;
+        }
+        t += dt;
+    }
+
+    col *= uBrightness;
+    col  = col / (1.0 + col);                 // tonemap suave (evita saturación)
+    float alpha = clamp(1.0 - transmittance, 0.0, 1.0);
+    if (alpha < 0.003) discard;
+    finalColor = vec4(col, alpha);            // premultiplicado (BLEND_ALPHA_PREMULTIPLY)
 }
 )GLSL";
 

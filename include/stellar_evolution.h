@@ -174,12 +174,12 @@ inline StellarTarget GetStellarPhaseTarget(const Body& b) {
         return { rFac, targetL, targetT };
     }
     case StellarPhase::NEUTRON_STAR: {
-        // ~11 km de radio (tipico de pulsares). Temperatura muy alta
-        // (pulsar joven ~6×10^5 K, se enfria en Myr). isStar=false asi
-        // que main.cpp NO sobreescribe temperatura via Stefan-Boltzmann.
-        double R_NS   = 11000.0; // 11 km
-        double rFac   = R_NS / msRadius;
-        double targetT = 600000.0;
+        // Radio: preservar el del cuerpo (igual que PULSAR/MAGNETAR) para que
+        // los NS de catalogo con radio real (p.ej. 12 km) no sean reescalados
+        // hacia el valor generico de 11 km por el lerp de ApplyStellarPhaseProperties.
+        double R_NS    = std::max(10000.0, b.radius > 0.0 ? b.radius : 12000.0);
+        double rFac    = R_NS / msRadius;
+        double targetT = std::max(600000.0, b.temperature > 0.0 ? b.temperature : 600000.0);
         double targetL = 4.0 * PI_D * SIGMA * R_NS * R_NS * std::pow(targetT, 4.0);
         return { rFac, targetL, targetT };
     }
@@ -190,21 +190,22 @@ inline StellarTarget GetStellarPhaseTarget(const Body& b) {
         return { rFac, 0.0, 0.0 };
     }
     case StellarPhase::PULSAR: {
-        // Estrella de neutrones en rotacion extrema. T muy alta (>10^6 K).
-        // Radio tipico 10-12 km (igual que NS generico).
-        double R_PS   = std::max(10000.0, b.radius > 0 ? b.radius : 12000.0);
+        // Targets FIJOS: evita que max(600000, b.temperature) deje al pulsar
+        // bloqueado a la temperatura residual de la SN (~90 millones K) para siempre.
+        // La temperatura irá convergiendo desde el estado inicial (caliente) hacia
+        // 1.9 MK via lerp — enfriamiento suave, no salto instantáneo.
+        constexpr double R_PS  = 11000.0;  // 11 km
+        constexpr double T_PS  = 1.9e6;    // ~2 millones K (pulsar joven)
         double rFac   = R_PS / msRadius;
-        double targetT = std::max(600000.0, b.temperature > 0 ? b.temperature : 1.9e6);
-        double targetL = 4.0 * PI_D * SIGMA * R_PS * R_PS * std::pow(targetT, 4.0);
-        return { rFac, targetL, targetT };
+        double targetL = 4.0 * PI_D * SIGMA * R_PS * R_PS * std::pow(T_PS, 4.0);
+        return { rFac, targetL, T_PS };
     }
     case StellarPhase::MAGNETAR: {
-        // Campo magnetico extremo (~10^10 T). Temperatura superficial alta.
-        double R_MG   = std::max(10000.0, b.radius > 0 ? b.radius : 12000.0);
+        constexpr double R_MG  = 12000.0;  // 12 km
+        constexpr double T_MG  = 8.0e8;    // campo extremo, muy caliente
         double rFac   = R_MG / msRadius;
-        double targetT = 8.0e8; // mucho mas caliente que un NS normal
-        double targetL = 4.0 * PI_D * SIGMA * R_MG * R_MG * std::pow(targetT, 4.0);
-        return { rFac, targetL, targetT };
+        double targetL = 4.0 * PI_D * SIGMA * R_MG * R_MG * std::pow(T_MG, 4.0);
+        return { rFac, targetL, T_MG };
     }
     case StellarPhase::PLANETARY_NEBULA: {
         // Núcleo caliente expuesto: radio terrestre, temperatura altísima.
@@ -376,6 +377,27 @@ inline void UpdateStellarComposition(Body& b) {
     }
 }
 
+// ── Fases sin llamaradas: fusión terminada o evento de muerte ────────────
+// Objetos compactos y enanas (sin convección/campo magnético renovado que
+// sostenga arcos) + el propio evento de supernova (las flares deben
+// reabsorberse durante la explosión). Al entrar en cualquiera de estas, las
+// llamaradas vivas ejecutan su animación de muerte (ver flareDeathProgress).
+inline bool StarPhaseHasNoFlares(StellarPhase phase) {
+    switch (phase) {
+    case StellarPhase::SUPERNOVA:
+    case StellarPhase::WHITE_DWARF:
+    case StellarPhase::BLACK_DWARF:
+    case StellarPhase::NEUTRON_STAR:
+    case StellarPhase::PULSAR:
+    case StellarPhase::MAGNETAR:
+    case StellarPhase::BLACK_HOLE:
+    case StellarPhase::BLUE_DWARF:
+        return true;
+    default:
+        return false;
+    }
+}
+
 // ── Validez de fase según masa inicial Y actual (combinadas) ─────────────
 // Ruta de supernova: habilitada si la estrella ALGUNA VEZ tuvo masa suficiente
 // (inicial O actual) -- una estrella que ganó masa por Roche puede calificar
@@ -465,6 +487,61 @@ inline StellarPhase NearestValidStellarPhase(const Body& b, StellarPhase desired
     default:
         return StellarPhase::MAIN_SEQUENCE;
     }
+}
+
+// ── Pérdida de masa por viento estelar ───────────────────────────────────
+// Devuelve la tasa de pérdida de masa en kg/s (valor positivo = masa perdida).
+//
+// Escala temporal OBSERVABLE: calibrada para que la pérdida sea visible en
+// minutos de tiempo real a velocidad máxima (x32768 ≈ 75 años/segundo real):
+//   RGB:  ~40 min a x32768 para perder 5%
+//   AGB:  ~18 min a x32768 para perder 20%
+//   TP:   ~7  min a x32768 para perder 18% (superviento)
+//   PN:   ~3  min a x32768 para perder 5%  (expulsión rápida)
+//
+// La escala tMS-based del intento anterior era 100-200× demasiado lenta porque
+// las fases del juego duran cientos de millones de años de simulación.
+inline double StellarMassLossRate(const Body& b) {
+    if (!b.isStar || b.mass <= 0.0 || b.stellarManualOverride) return 0.0;
+
+    const double M0 = std::max(0.1, b.initialStellarMass / M_SUN);
+    if (b.mass <= 0.0) return 0.0;
+
+    // lossFrac: fracción de masa_actual a perder durante la fase
+    // timescale: escala temporal observable [sim-segundos]
+    //   A x32768 y 60fps: 1 real-min ≈ 4500 años sim ≈ 1.42e11 sim-s
+    //   → timescale 1e12 s ≈ 7 min a x32768 para perder lossFrac completo
+    double lossFrac = 0.0, timescale = 1.0;
+
+    switch (b.stellarPhase) {
+    case StellarPhase::RED_GIANT:
+        lossFrac = 0.05; timescale = 5.0e12; break; // ~40 min × x32768
+    case StellarPhase::HELIUM_FLASH:
+    case StellarPhase::HORIZONTAL_BRANCH:
+        lossFrac = 0.01; timescale = 1.0e12; break;
+    case StellarPhase::AGB:
+        lossFrac = 0.20; timescale = 2.5e12; break; // ~18 min × x32768
+    case StellarPhase::THERMAL_PULSES:
+        lossFrac = 0.18; timescale = 1.0e12; break; // ~7  min × x32768
+    case StellarPhase::PLANETARY_NEBULA:
+        lossFrac = 0.05; timescale = 5.0e11; break; // ~3  min × x32768
+    case StellarPhase::SUPERGIANT: {
+        // Vientos LBV/OB: más agresivos cuanto mayor es la masa
+        double boost = 1.0 + std::max(0.0, (M0 - 8.0) / 20.0);
+        lossFrac  = 0.20 * boost;
+        timescale = 1.0e12 / boost;
+        break;
+    }
+    default: return 0.0; // MS, SUBGIANT, WD, NS, BH: sin pérdida apreciable
+    }
+
+    // No bajar del núcleo compacto esperado (relación inicial-final de Kalirai 2008)
+    const double mWD     = std::max(0.1, 0.109 * M0 + 0.394);
+    const double minMass = (M0 < b.effectiveSNThreshold) ? mWD * M_SUN : 1.4 * M_SUN;
+    if (b.mass <= minMass * 1.01) return 0.0;
+
+    // rate [kg/s] = lossFrac × masa_actual / timescale_observable
+    return (lossFrac * b.mass) / timescale;
 }
 
 // ── Aplicar propiedades de la fase con interpolación suave ───
@@ -670,46 +747,6 @@ inline void UpdateStellarEvolution(Body& b, double dt,
                                     std::vector<Body>& bodies,
                                     std::vector<DustParticle>& dust)
 {
-    // ── Remanente: expandir y luego emerger como remanente compacto ─
-    if (b.isSupernovaRemnant) {
-        b.stellarPhaseAge += dt;
-        UpdateRemnantExpansion(b, dt);
-        if (b.stellarPhaseAge > 3.156e7) {
-            // El gas se disipo. Si la SN dejo un remanente compacto
-            // (compactRemnantType != 0, calculado al inicio de SUPERNOVA),
-            // este cuerpo se convierte en ese objeto en vez de eliminarse.
-            if (b.compactRemnantType > 0) {
-                b.isSupernovaRemnant = false;
-                b.mass               = b.remnantMass;
-                b.intactMass         = b.remnantMass;
-                b.gravityEnabled     = true;
-                b.collisionEnabled   = true;
-                constexpr double c   = 3.0e8;
-                if (b.compactRemnantType == 1) {
-                    // Estrella de neutrones
-                    b.stellarPhase  = StellarPhase::NEUTRON_STAR;
-                    b.radius        = 11000.0; // 11 km
-                    b.temperature   = 600000.0;
-                    b.luminosity    = 4.0 * PI_D * SIGMA * 11000.0 * 11000.0 * std::pow(600000.0, 4.0);
-                } else {
-                    // Agujero negro
-                    b.stellarPhase  = StellarPhase::BLACK_HOLE;
-                    b.radius        = std::max(5000.0, 2.0 * G * b.mass / (c * c));
-                    b.temperature   = 0.0;
-                    b.luminosity    = 0.0;
-                }
-                b.baseLuminosity  = b.luminosity;
-                b.visualLuminosity = b.luminosity;
-                b.stellarPhaseAge  = 0.0;
-                b.supernovaRadius  = 0.0;
-                b.supernovaProgress = 0.0;
-            } else {
-                b.mass = -1.0; // señal interna: erase_if en main.cpp
-            }
-        }
-        return;
-    }
-
     if (!b.isStar || b.mass <= 0.0) return;
 
     // Recalcula umbral SN, rotación crítica, composición Y corrige la fase si
@@ -722,6 +759,13 @@ inline void UpdateStellarEvolution(Body& b, double dt,
 
     b.stellarAge      += dt;
     b.stellarPhaseAge += dt;
+
+    // Pérdida de masa por viento estelar (Reimers calibrado a duraciones del juego)
+    {
+        double mdot = StellarMassLossRate(b); // kg/s
+        if (mdot > 0.0)
+            b.mass = std::max(b.mass - mdot * dt, 0.1 * M_SUN);
+    }
 
     double mRatio = std::max(0.08, b.initialStellarMass / M_SUN);
 
@@ -796,46 +840,96 @@ inline void UpdateStellarEvolution(Body& b, double dt,
         break;
 
     case StellarPhase::SUPERNOVA: {
-        b.supernovaProgress = std::min(1.0, b.stellarPhaseAge / 6e5);
-        b.supernovaRadius  += 3e7 * dt * (1.0 - b.supernovaProgress * 0.8);
+        // PRIMERA VEZ: guardar radio inicial y determinar tipo de remanente.
+        // kickVelocity reutilizado temporalmente para almacenar el radio de la
+        // supergigante antes del colapso (se restaura a 0 al finalizar la SN).
+        if (b.stellarPhaseAge <= dt * 1.5) {
+            b.kickVelocity      = b.radius;
+            b.supernovaProgress = 0.0;
+            b.supernovaRadius   = 0.0;
+            if (mRatio < 20.0) {
+                b.compactRemnantType = 1;           // estrella de neutrones
+                b.remnantMass        = 1.4 * M_SUN;
+            } else {
+                b.compactRemnantType = 2;           // agujero negro
+                b.remnantMass        = std::max(3.0, mRatio * 0.08) * M_SUN;
+            }
+        }
 
-        // Luminosidad pico con curva cinematográfica (valor absoluto, no relativo)
+        b.supernovaProgress = std::min(1.0, b.stellarPhaseAge / 6e5);
+        // La onda de choque se lanza cuando el núcleo YA está casi completamente
+        // colapsado (progress ~0.045; collapseT=progress/0.05 → 90% comprimido):
+        // el núcleo implosiona, rebota y la explosión REVIENTA hacia afuera.
+        // Velocidad inicial alta (blast) que decelera -- expansión violenta.
+        if (b.supernovaProgress >= 0.045)
+            b.supernovaRadius += 7e7 * dt * (1.0 - b.supernovaProgress * 0.6);
+
+        // IMPLOSIÓN: el radio colapsa al tamaño del objeto compacto durante el
+        // primer 5% de la SN (≈primer 8h simuladas). La supergigante se ve
+        // contraer dramáticamente mientras la onda de choque sale hacia afuera.
+        {
+            constexpr double c = 3.0e8;
+            double compactR  = (b.compactRemnantType == 2)
+                ? std::max(5000.0, 2.0 * G * b.remnantMass / (c * c))
+                : 11000.0;
+            double collapseT = std::min(1.0, b.supernovaProgress / 0.05);
+            double initialR  = (b.kickVelocity > 0.0) ? b.kickVelocity : b.radius;
+            b.radius = initialR + (compactR - initialR) * collapseT;
+        }
+
+        // Luminosidad con curva cinematográfica
         double snPeak      = L_SUN * 1e9 * std::sqrt(std::max(1.0, mRatio));
         b.visualLuminosity = snPeak * SupernovaLightCurve(b.supernovaProgress);
         b.baseLuminosity   = b.visualLuminosity;
         b.luminosity       = b.visualLuminosity;
 
-        // Eyección de material (solo UNA VEZ al entrar en la fase)
+        // Eyección de material (solo primer frame)
         if (b.stellarPhaseAge < dt * 1.5)
             SpawnSupernovaEjecta(bodies, dust, b);
 
         if (b.supernovaProgress >= 1.0) {
-            // Calcular tipo y masa del remanente compacto ANTES de cero-
-            // ificar b.mass. Se almacena en los placeholders del Body para
-            // que UpdateStellarEvolution los lea cuando el remanente
-            // expansivo expire (~1 año simulado) y emerja el objeto
-            // compacto real.
-            //   < 20 M☉  →  estrella de neutrones (~1.4 M☉)
-            //   ≥ 20 M☉  →  agujero negro (~8% masa progenitor, min 3 M☉)
-            // Umbral 20 M☉ es aproximado; en la realidad depende de la
-            // composicion, la tasa de perdida de masa y el modelo de
-            // implosion -- pero es el valor de referencia mas citado.
-            if (mRatio < 20.0) {
-                b.compactRemnantType = 1; // estrella de neutrones
-                b.remnantMass        = 1.4 * M_SUN;
+            // Transición DIRECTA al objeto compacto — sin SUPERNOVA_REMNANT intermedio.
+            // La supernova es un evento de muerte, no una fase evolutiva separada.
+            constexpr double c = 3.0e8;
+            b.isSupernovaRemnant = false;
+            b.supernovaProgress  = 0.0;
+            b.supernovaRadius    = 0.0;
+            b.kickVelocity       = 0.0;
+            b.gravityEnabled     = true;
+            b.collisionEnabled   = true;
+
+            if (b.compactRemnantType == 1) {
+                // Pulsar: NS recién formada con spin rápido (conservación de L angular)
+                // NO tocar b.radius (ya en 11 km por el lerp de implosión).
+                // NO tocar b.luminosity/temperature: ApplyStellarPhaseProperties las
+                // lerpeará desde el estado residual de la SN hacia los targets del
+                // pulsar — transición suave sin "POP" de luminosidad.
+                b.mass        = b.remnantMass;
+                b.intactMass  = b.remnantMass;
+                b.isStar      = true;
+                b.spinRateDeg = 3600.0f;  // ~600 RPM al nacer
+                // Eje inclinado: crea el efecto visual de haz del pulsar girando.
+                // Determinístico por ID para reproducibilidad entre reinicios.
+                b.axialTilt   = 20.0f + (float)(b.id % 61); // 20-80 grados
+                StellarTransitionTo(b, StellarPhase::PULSAR, dt);
             } else {
-                b.compactRemnantType = 2; // agujero negro
-                b.remnantMass        = std::max(3.0, mRatio * 0.08) * M_SUN;
+                // Agujero negro
+                // b.radius ya está en el radio de Schwarzschild por el lerp de implosión.
+                b.mass             = b.remnantMass;
+                b.intactMass       = b.remnantMass;
+                b.isStar           = false;
+                b.temperature      = 0.0;
+                b.luminosity       = 0.0;
+                b.baseLuminosity   = 0.0;
+                b.visualLuminosity = 0.0;
+                StellarTransitionTo(b, StellarPhase::BLACK_HOLE, dt);
             }
-            b.mass               = 0.0;
-            b.isStar             = false;
-            b.gravityEnabled     = false;
-            b.collisionEnabled   = false;
-            b.isSupernovaRemnant = true;
-            StellarTransitionTo(b, StellarPhase::SUPERNOVA_REMNANT, dt);
         }
         break;
     }
+
+    case StellarPhase::SUPERNOVA_REMNANT:
+        break; // no longer used: SN ahora transiciona directamente a PULSAR/BLACK_HOLE
     case StellarPhase::WHITE_DWARF:
         // Enfriamiento continuo, sin transición posterior
         break;
