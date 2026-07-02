@@ -541,6 +541,30 @@ inline Body SpawnFromCatalog(const CatalogItem& item, const std::string& baseNam
         // spawnear: arrancan con la reabsorción ya completada.
         b.flareDeathProgress   = StarPhaseHasNoFlares(b.stellarPhase) ? 1.0f : 0.0f;
 
+        // Campo magnetico estelar (1 Gauss = 1e-4 T). Guardado con '<= 0.0' para
+        // NO pisar los bloques especificos de pulsar/magnetar/NS (campos extremos
+        // ya asignados). Valores realistas para estrellas catalogadas; el resto
+        // (procedurales) usa una dinamo generica escalada por actividad.
+        //
+        // NOTA de realismo: solo el Sol tiene campo Y geometria bien estudiados
+        // (campo medio ~1 G, manchas hasta ~3000 G, tilt ~7 deg variando con el
+        // ciclo de 11 anios). Alpha Cen A/B: campo medido, tilt estimado.
+        // Betelgeuse: campo ~1 G detectado, tilt sin datos. UY Scuti / Stephenson
+        // 2-18: sin mediciones directas -- valores como hipotesis razonable.
+        if (b.magneticFieldStrength <= 0.0) {
+            if      (baseName == "Sol")             { b.magneticFieldStrength = 1.0e-4; b.magneticAxisTilt = 7.0f;  }
+            else if (baseName == "Alpha Centauri A"){ b.magneticFieldStrength = 1.0e-4; b.magneticAxisTilt = 10.0f; }
+            else if (baseName == "Alpha Centauri B"){ b.magneticFieldStrength = 5.0e-4; b.magneticAxisTilt = 20.0f; }
+            else if (baseName == "UY Scuti")        { b.magneticFieldStrength = 3.0e-5; b.magneticAxisTilt = 15.0f; }
+            else if (baseName == "Betelgeuse")      { b.magneticFieldStrength = 1.0e-4; b.magneticAxisTilt = 15.0f; }
+            else if (baseName == "Stephenson 2-18") { b.magneticFieldStrength = 1.0e-5; b.magneticAxisTilt = 15.0f; }
+            else {
+                // Estrellas procedurales / no catalogadas: dinamo generico.
+                b.magneticFieldStrength = 1.0e-4 * (0.5 + b.stellarActivity * 3.0);
+                b.magneticAxisTilt      = 5.0f + (float)((b.id * 2246822519ull) % 250) / 10.0f;
+            }
+        }
+
         // Metalicidad: Sol y estrellas reales catalogadas fijas en 0.014
         // (el JSON fuente no da metalicidad real para ellas; fijarla evita
         // que el ruido aleatorio de abajo empuje 'effectiveSNThreshold' por

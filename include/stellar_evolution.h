@@ -835,8 +835,11 @@ inline void UpdateStellarEvolution(Body& b, double dt,
         break;
 
     case StellarPhase::SUPERGIANT:
-        if (b.stellarPhaseAge > tMS * 0.05)
-            StellarTransitionTo(b, StellarPhase::SUPERNOVA, dt);
+        // Fase evolutiva FINAL de la ruta masiva. NO auto-detona la supernova:
+        // el jugador decide (dejarla vivir o pulsar "Detonar Supernova"). Así la
+        // auto-evolución nunca alcanza por sí sola los objetos compactos
+        // (estrella de neutrones/pulsar/magnetar/agujero negro) -- esos solo se
+        // forman como resultado de una supernova detonada manualmente.
         break;
 
     case StellarPhase::SUPERNOVA: {
@@ -911,6 +914,11 @@ inline void UpdateStellarEvolution(Body& b, double dt,
                 // Eje inclinado: crea el efecto visual de haz del pulsar girando.
                 // Determinístico por ID para reproducibilidad entre reinicios.
                 b.axialTilt   = 20.0f + (float)(b.id % 61); // 20-80 grados
+                // Campo magnético extremo del púlsar recién formado (~1e9 T),
+                // por conservación del flujo al colapsar. Sin esto, un púlsar
+                // formado in-game no mostraba campo (los del catálogo sí).
+                b.magneticFieldStrength = 1.0e9;
+                b.magneticAxisTilt      = 10.0f + (float)(b.id % 41); // 10-50 grados
                 StellarTransitionTo(b, StellarPhase::PULSAR, dt);
             } else {
                 // Agujero negro
@@ -922,6 +930,9 @@ inline void UpdateStellarEvolution(Body& b, double dt,
                 b.luminosity       = 0.0;
                 b.baseLuminosity   = 0.0;
                 b.visualLuminosity = 0.0;
+                // Sin campo magnético clásico de superficie (no tiene superficie).
+                b.magneticFieldStrength = 0.0;
+                b.magneticAxisTilt      = 0.0f;
                 StellarTransitionTo(b, StellarPhase::BLACK_HOLE, dt);
             }
         }

@@ -507,6 +507,13 @@ inline void DrawObjectInspector(GuiState& gui, Body& b,
     bool hasSolidComp = !b.solid_composition.empty();
     bool hasAtmoComp  = !b.atmospheric_composition.empty();
     bool hasHydro     = b.isRockyPlanet && b.volatileBudget > 0.0f;
+    // Objeto estelar (estrella viva o remanente compacto): para estos, "Material"
+    // (rocoso/gaseoso/…) no aplica y su composición NO es atmosférica sino estelar.
+    bool isStellarObject = b.isStar || b.isSupernovaRemnant
+        || b.stellarPhase == StellarPhase::NEUTRON_STAR
+        || b.stellarPhase == StellarPhase::BLACK_HOLE
+        || b.stellarPhase == StellarPhase::PULSAR
+        || b.stellarPhase == StellarPhase::MAGNETAR;
 
     if (ImGui::BeginTabBar("##inspTabs", ImGuiTabBarFlags_FittingPolicyScroll)) {
 
@@ -547,7 +554,10 @@ inline void DrawObjectInspector(GuiState& gui, Body& b,
         const char* matStr = b.material == MAT_ICY      ? "Helado"
                             : b.material == MAT_GASEOUS  ? "Gaseoso"
                             : b.material == MAT_METALLIC ? "Metalico" : "Rocoso";
-        ImGui::Text("Material: %s", matStr);
+        // "Material" es una clasificación planetaria: no se muestra para estrellas
+        // ni remanentes compactos (un agujero negro no es "Gaseoso").
+        if (!isStellarObject)
+            ImGui::Text("Material: %s", matStr);
         ImGui::Text("Temperatura: %.0f K", b.temperature);
         ImGui::Text("Marea: %.2f   Dano: %.0f%%", b.tideStretch, (float)b.tidalDamage * 100.0f);
         if (b.tidalLock > 0.02f)
@@ -602,11 +612,11 @@ inline void DrawObjectInspector(GuiState& gui, Body& b,
                 StellarPhase::AGB,          StellarPhase::THERMAL_PULSES,
                 StellarPhase::PLANETARY_NEBULA,
                 StellarPhase::WHITE_DWARF,  StellarPhase::BLACK_DWARF,
-                // Ruta masiva (SN se detona via boton; no es fase seleccionable)
+                // Ruta masiva: TERMINA en supergigante. Los objetos compactos
+                // (estrella de neutrones/pulsar/magnetar/agujero negro) NO son
+                // fases seleccionables ni forzables -- solo se alcanzan detonando
+                // la supernova (botón), que decide el tipo según la masa.
                 StellarPhase::SUPERGIANT,
-                StellarPhase::NEUTRON_STAR,
-                StellarPhase::PULSAR,   StellarPhase::MAGNETAR,
-                StellarPhase::BLACK_HOLE,
             };
             int phaseIdx = std::clamp((int)b.stellarPhase, 0, 18);
             // Durante la supernova (evento, no fase) mostrar el objeto compacto destino
@@ -770,11 +780,11 @@ inline void DrawObjectInspector(GuiState& gui, Body& b,
                     }
                 } // end !isCompactRemnant
 
-                // Propiedades fisicas: visibles para todos los tipos de estrella
+                // Propiedades fisicas ESPECIFICAS de estrella (temperatura, masa
+                // y radio ya se muestran abajo en el bloque general comun a todos
+                // los cuerpos -- no duplicarlas aqui).
                 ImGui::Separator();
-                ImGui::Text("Temp: %.0f K  |  Lum: %.3f Lsol", b.temperature, b.luminosity / L_SUN);
-                ImGui::Text("Radio: %.3f Rsol  |  Masa: %.3f Msol",
-                    b.radius / R_SUN, b.initialStellarMass / M_SUN);
+                ImGui::Text("Luminosidad: %.3f Lsol", b.luminosity / L_SUN);
                 if (b.pulsationAmplitude > 0.01f)
                     ImGui::Text("Pulsacion: +-%.0f%%  |  Actividad: %.2f",
                         b.pulsationAmplitude * 100.0f, b.stellarActivity);
@@ -869,7 +879,10 @@ inline void DrawObjectInspector(GuiState& gui, Body& b,
             }
             if (hasAtmoComp) {
                 if (hasSolidComp) ImGui::Separator();
-                ImGui::TextDisabled("Atmosfera");
+                // Para estrellas/remanentes el mapa guarda composición estelar
+                // estimada (nucleo/capas), no una atmósfera planetaria.
+                ImGui::TextDisabled(isStellarObject ? "Composicion estelar estimada"
+                                                    : "Atmosfera");
                 DrawCompositionList(b.atmospheric_composition);
             }
             if (hasHydro) {
